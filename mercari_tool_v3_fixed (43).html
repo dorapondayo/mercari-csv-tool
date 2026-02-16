@@ -1,0 +1,2123 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>メルカリCSV生成ツール</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/encoding-japanese@2.0.0/encoding.min.js"></script>
+  <style>
+    .drag-over { border-color: #3b82f6 !important; background: #eff6ff !important; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useRef, useCallback, useEffect } = React;
+
+// 設定
+const CONFIG = {
+  category_macbook: '9taHgBE3YAkhXLEpvShiYc',
+  category_windows: 'FUdk7W2MDA6tujBfXCjgr4',
+  shipping_method: 3,        // 配送方法（3=らくらくメルカリ便）
+  region: 'jp14',            // 発送元（jp14=神奈川県）
+  shipping_days: 2,          // 発送日数（2=2~3日で発送）
+  shipping_fee: 1,           // 配送料負担（1=送料込み）
+  condition_map: {           // 商品の状態
+    '新品、未使用': 1,
+    '未使用に近い': 2,
+    '目立った傷や汚れなし': 3,
+    'やや傷や汚れあり': 4,
+    '傷や汚れあり': 5,
+    '全体的に状態が悪い': 6
+  }
+};
+
+const CONDITION_MAP = {
+  'A': '目立った傷や汚れなし', 'B': 'やや傷や汚れあり',
+  'C': '目立った傷や汚れなし', 'D': 'やや傷や汚れあり', 'Z': '全体的に状態が悪い'
+};
+
+const ACCESSORY_MAP = {
+  '電源ｺｰﾄﾞ': 'ACコード', 'ACｺｰﾄﾞ': 'ACコード', 'ACコード': 'ACコード',
+  'ACｱﾀﾞﾌﾟﾀ': 'ACアダプター', 'ACｱﾀﾞﾌﾟﾀｰ': 'ACアダプター', 'ACアダプター': 'ACアダプター',
+  'MagSafeケーブル': 'MagSafeケーブル', 'USB-C-Cケーブル': 'USB-Cケーブル',
+  'ACプラグ': 'ACプラグ', 'ﾏｳｽ': 'マウス', 'ｷｰﾎﾞｰﾄﾞ': 'キーボード'
+};
+const ACCESSORY_EXCLUDE = ['ﾊﾞｯﾃﾘﾊﾟｯｸ', 'Webｶﾒﾗ有', '英字KB', 'TV機能'];
+
+const NOTICE_TEXT = `※ 実際の商品画像です。
+※ スペックや状態の詳細は画像からご確認ください。
+※ 中古品のため、使用に差し支えない傷や汚れがある場合があります。必ず写真をご確認ください。
+
+■ 初期不良について
+商品到着後7日以内にご連絡いただいた初期不良（電源が入らない、画面が映らない等）については、当店にて動作確認の上、無償で交換または修理対応を行います。
+・対象期間：商品到着後7日以内
+・返送送料：全て当店負担
+
+■ 保証対象外
+以下の場合は保証・返品の対象外です。
+・お客様の過失による故障・破損（水濡れ・落下・衝撃・誤接続など）
+・改造・分解・OS再インストールによるトラブル
+・対応しないゲームやソフトウェアとの相性
+・動作に影響しない軽微な外観上の傷や汚れ
+傷や使用感など見た目による返品はお受けできません。
+改造・物理破損・不適切な使用による不具合は保証対象外です。
+
+※該当が疑われる場合は、状況写真を添えて事前にご連絡のうえ、着払いでご返送ください。`;
+
+// ユーティリティ
+const normalizeMemory = (v) => {
+  if (!v) return '';
+  const str = String(v).toUpperCase();
+  // MB表記の場合はGBに変換
+  const mbMatch = str.match(/(\d+)\s*(MB|M)/i);
+  if (mbMatch) {
+    const mb = parseInt(mbMatch[1]);
+    return `${Math.round(mb / 1024)}GB`;
+  }
+  // GB表記
+  const gbMatch = str.match(/(\d+)\s*(GB|G)?/i);
+  if (gbMatch) {
+    const n = parseInt(gbMatch[1]);
+    // 1000以上はMBの可能性が高い
+    if (n >= 1000) return `${Math.round(n / 1024)}GB`;
+    return `${n}GB`;
+  }
+  return v;
+};
+
+const normalizeStorage = (v) => {
+  if (!v) return '';
+  const str = String(v).toUpperCase();
+  const m = str.match(/(\d+)\s*(G|GB|T|TB)?/i);
+  if (m) {
+    const n = parseInt(m[1]);
+    const u = (m[2] || '').toUpperCase();
+    return (u === 'T' || u === 'TB' || n <= 4) ? `${n}TB` : `${n}GB`;
+  }
+  return v;
+};
+
+// EMC番号からMac情報を取得するマッピング
+const EMC_MAP = {
+  // MacBook Pro 16"
+  '3347': { size: '16', year: '2019' },
+  '3651': { size: '16', year: '2021' },
+  '4044': { size: '16', year: '2023' },
+  // MacBook Pro 15"
+  '3215': { size: '15', year: '2018' },
+  '3162': { size: '15', year: '2017' },
+  '3163': { size: '15', year: '2017' },
+  '3072': { size: '15', year: '2016' },
+  // MacBook Pro 14"
+  '3598': { size: '14', year: '2021' },
+  '4046': { size: '14', year: '2023' },
+  // MacBook Pro 13"
+  '3301': { size: '13', year: '2019' },
+  '3214': { size: '13', year: '2018' },
+  '3164': { size: '13', year: '2017' },
+  '3071': { size: '13', year: '2016' },
+  '3358': { size: '13', year: '2020' },
+  '3578': { size: '13', year: '2020' }, // M1
+  // MacBook Air 13"
+  '3348': { size: '13', year: '2020' },
+  '3598': { size: '13', year: '2020' }, // M1
+  '3941': { size: '13', year: '2022' }, // M2
+  // MacBook Air 15"
+  '4043': { size: '15', year: '2023' },
+};
+
+const extractSpecs = (row) => {
+  const s = { maker: '', product_name: '', cpu: '', memory: '', storage: '', display: '', gpu: '', model: '', size: '', year: '', chip: '' };
+  if (!row) return s;
+  
+  s.maker = row['メーカー'] || '';
+  s.product_name = (row['商品名'] || '').replace(/\([^)]*\)/g, '').trim();
+  s.gpu = row['GPU'] || '';
+  
+  // Mac情報抽出
+  const name = row['商品名'] || '';
+  const cpu = row['CPU'] || '';
+  const makerLower = s.maker.toLowerCase();
+  const nameLower = name.toLowerCase();
+  
+  if (makerLower.includes('apple') || nameLower.includes('mac')) {
+    // EMC番号から情報取得
+    const emcMatch = name.match(/EMC\s*(\d{4})/i);
+    if (emcMatch && EMC_MAP[emcMatch[1]]) {
+      const emcInfo = EMC_MAP[emcMatch[1]];
+      s.size = emcInfo.size + 'インチ';
+      s.year = emcInfo.year;
+    }
+    
+    // model抽出（Pro/Air/mini/iMac）
+    if (/macbook\s*pro|m-?book\s*pro/i.test(name)) {
+      s.model = 'MacBook Pro';
+    } else if (/macbook\s*air|m-?book\s*air/i.test(name)) {
+      s.model = 'MacBook Air';
+    } else if (/mac\s*mini/i.test(name)) {
+      s.model = 'Mac mini';
+    } else if (/imac/i.test(name)) {
+      s.model = 'iMac';
+    } else if (/mac\s*pro/i.test(name)) {
+      s.model = 'Mac Pro';
+    } else {
+      s.model = 'MacBook';
+    }
+    
+    // size抽出（EMCから取得済みでなければ）
+    if (!s.size) {
+      const nameForSize = name.replace(/\([^)]*\)/g, '');
+      const sizeMatch = nameForSize.match(/(\d{2})[- ]?inch|(\d{2}(?:\.\d)?)[ｲイ]?ﾝ?ﾁ|(\d{2}(?:\.\d)?)インチ/i);
+      if (sizeMatch) {
+        s.size = (sizeMatch[1] || sizeMatch[2] || sizeMatch[3]) + 'インチ';
+      }
+    }
+    
+    // year抽出（EMCから取得済みでなければ）
+    if (!s.year) {
+      const yearMatch = name.match(/\b(20[12]\d)\b/);
+      if (yearMatch) {
+        s.year = yearMatch[1];
+      }
+    }
+    
+    // yearがなければCPU型番から推測
+    if (!s.year && cpu) {
+      // Ice Lake Mac用（1000NG4, 1030NG7など）
+      if (/10[0-9]{2}NG/i.test(cpu)) {
+        s.year = '2020';
+      } else {
+        // 第10世代以降（10xxx〜14xxx）
+        let genMatch = cpu.match(/i[3579]-(1[0-4])\d{3}/i);
+        if (genMatch) {
+          const gen = parseInt(genMatch[1]);
+          const yearMap = {10: '2020', 11: '2020', 12: '2021', 13: '2022', 14: '2023'};
+          s.year = yearMap[gen] || '';
+        } else {
+          // 第4-9世代（4xxx〜9xxx）
+          genMatch = cpu.match(/i[3579]-([4-9])\d{3}/i);
+          if (genMatch) {
+            const gen = parseInt(genMatch[1]);
+            const yearMap = {4: '2013', 5: '2015', 6: '2016', 7: '2017', 8: '2018', 9: '2019'};
+            s.year = yearMap[gen] || '';
+          }
+        }
+      }
+    }
+    
+    // chip抽出（M1/M2/M3/M4など、M1P=M1 Proなど短縮形も対応）
+    const chipMatch = cpu.match(/\b(M[1-4](?:\s*(?:Pro|Max|Ultra))?)\b/i) || cpu.match(/\b(M[1-4]P)\b/i);
+    if (chipMatch) {
+      let chip = chipMatch[1];
+      // 短縮形を展開
+      chip = chip.replace(/^M(\d)P$/i, 'M$1 Pro');
+      s.chip = chip;
+    }
+  }
+  
+  // 専用列があれば優先
+  if (row['メモリ']) s.memory = normalizeMemory(row['メモリ']);
+  if (row['ストレージ']) s.storage = normalizeStorage(row['ストレージ']);
+  if (row['ディスプレイサイズ']) {
+    const d = row['ディスプレイサイズ'].replace(/[ｲﾝﾁインチ型]/g, '').trim();
+    if (d) s.display = `${d}インチ`;
+  }
+  
+  // CPU列を解析
+  if (cpu) {
+    const p = cpu.split('/');
+    s.cpu = p[0]?.trim() || '';
+    
+    // CPU列からGPU抽出
+    p.forEach(x => { if (/RTX|GTX|MX\d/i.test(x) && !s.gpu) s.gpu = x.trim(); });
+    
+    // 専用列が空の場合、CPU列から抽出
+    if (!s.memory && p[1]) s.memory = normalizeMemory(p[1].trim());
+    if (!s.storage && p[2]) s.storage = normalizeStorage(p[2].trim());
+    if (!s.display && p[3]) {
+      const d = p[3].replace(/[ｲﾝﾁインチ型]/g, '').trim();
+      if (d) s.display = `${d}インチ`;
+    }
+    
+    // Mac用: sizeがまだ空ならCPU列から取得
+    if (!s.size && p[3]) {
+      const sizeFromCpu = p[3].match(/(\d{2}(?:\.\d)?)/);
+      if (sizeFromCpu) s.size = sizeFromCpu[1] + 'インチ';
+    }
+  }
+  
+  return s;
+};
+
+const detectProductType = (row, specs) => {
+  const m = (specs.maker || '').toLowerCase();
+  const n = (row['商品名'] || '').toLowerCase();
+  const c = row['CPU'] || '';
+  if (m.includes('apple') || n.includes('mac')) {
+    // M1/M2/M3/M4、またはM1P/M2Pなど短縮形
+    return /\bM[1-4]\b|^M[1-4]P?\b/i.test(c) ? 'apple_silicon' : 'intel_mac';
+  }
+  return 'windows';
+};
+
+const parseAccessories = (str) => {
+  if (!str) return [];
+  const r = [];
+  str.split(/[\s/]+/).forEach(p => {
+    if (ACCESSORY_EXCLUDE.some(e => p.includes(e))) return;
+    for (const [k, v] of Object.entries(ACCESSORY_MAP)) {
+      if (p.includes(k) && !r.includes(v)) { r.push(v); break; }
+    }
+  });
+  return r;
+};
+
+// ランクを日本語に変換
+const RANK_DISPLAY = {
+  'A': '美品',
+  'B': '美品',
+  'C': '良品',
+  'D': '傷あり',
+  'E': 'ジャンク'
+};
+
+// タイトル用CPU表記クリーン（Ci5-1.3G-1335U → Core i5-1335U）
+const cleanCpuForTitle = (cpu) => {
+  if (!cpu) return '';
+  let c = cpu;
+  // 周波数を除去: -1.7G-, -2.3G, 1.60GHz等
+  c = c.replace(/-[\d.]+G(?=-|$)/g, '');  // -1.7G- 形式
+  c = c.replace(/\s*[\d.]+\s*GHz/i, '');   // 1.60GHz 形式
+  // Ci3/Ci5/Ci7/Ci9 → Core i3/i5/i7/i9
+  c = c.replace(/^Ci(\d)/i, 'Core i$1');
+  // Corei5 → Core i5（スペース挿入）
+  c = c.replace(/^Corei(\d)/i, 'Core i$1');
+  // Core i5- 等のダッシュをスペースに（Core i5-10310U → Core i5 10310U）
+  c = c.replace(/^(Core\s*i\d)\s*-\s*/i, '$1 ');
+  // 二重ダッシュ・末尾ダッシュ整理
+  c = c.replace(/--+/g, '-').replace(/^-|-$/g, '');
+  return c.trim();
+};
+
+const makeTitle = (p) => {
+  const s = p.specs || {};
+  const t = p.product_type;
+  // ジャンク品の場合は【ジャンク】のみ、通常は【ランク】【1週間保証】
+  let prefix;
+  if (p.isJunk) {
+    prefix = '【ジャンク】';
+  } else {
+    const rankJp = RANK_DISPLAY[p.rank] || '良品';
+    prefix = `【${rankJp}】【1週間保証】`;
+  }
+  const parts = [prefix];
+  if (t === 'intel_mac' || t === 'apple_silicon') {
+    parts.push(`${s.model || 'MacBook'} ${s.size || ''}`);
+    if (s.year) parts.push(String(s.year));
+    if (t === 'apple_silicon' && s.chip) parts.push(s.chip);
+    else if (s.cpu) {
+      parts.push(cleanCpuForTitle(s.cpu));
+    }
+    if (s.memory) parts.push(s.memory);
+    if (s.storage) parts.push(s.storage);
+  } else {
+    if (s.maker) parts.push(s.maker.replace('mouse computer', 'mouse'));
+    if (s.cpu) {
+      parts.push(cleanCpuForTitle(s.cpu));
+    }
+    if (s.memory) parts.push(s.memory);
+    if (s.storage) parts.push(s.storage);
+    if (s.display) parts.push(s.display);
+    // 外付けGPUのみ表示（RTX/GTX/MX/Radeon/GeForce）、内蔵GPU(Intel/Lake系)は除外
+    if (s.gpu && /RTX|GTX|MX\d|Radeon|GeForce/i.test(s.gpu)) parts.push(s.gpu);
+    parts.push('Win11');
+  }
+  let title = parts[0] + parts.slice(1).join(' / ');
+  return title.length > 65 ? title.slice(0, 62) + '...' : title;
+};
+
+// ジャンク品用の状態テキスト
+const JUNK_STATE_TEXT = `本商品はジャンク品のため、動作・状態・部品の欠品を一切保証しません。
+起動不可・画面不良・異音・端子不良・バッテリー劣化・外装破損など、いかなる不具合でも返品・返金・交換不可となります。
+修理・部品取り前提でご購入ください。`;
+
+const makeDescription = (p) => {
+  const s = p.specs || {};
+  const t = p.product_type;
+  // 型番から「他 X台セット」を削除
+  const modelClean = (s.product_name || '-').replace(/他?\s*\d+台[ｾセ][ｯッ][ﾄト]/g, '').trim() || '-';
+  const lines = [];
+  if (t === 'intel_mac' || t === 'apple_silicon') {
+    lines.push(`モデル：${s.model || 'MacBook'} ${s.year || ''}`);
+    if (t === 'apple_silicon') lines.push(`チップ：Apple ${s.chip || ''}`);
+    else lines.push(`CPU：${s.cpu || '-'}`);
+    if (s.gpu) lines.push(`GPU：${s.gpu}`);
+    lines.push(`メモリ：${s.memory || '-'}`, `ストレージ：${s.storage || '-'}`, `ディスプレイ：${s.size || '-'}`);
+    if (p.cycle_count) lines.push(`充放電回数：${p.cycle_count}回`);
+    if (p.battery_health) lines.push(`バッテリー最大容量：${p.battery_health}%`);
+  } else {
+    lines.push(`メーカー：${s.maker || '-'}`, `型番：${modelClean}`, `CPU：${s.cpu || '-'}`);
+    if (s.gpu) lines.push(`GPU：${s.gpu}`);
+    lines.push(`メモリ：${s.memory || '-'}`, `ストレージ：${s.storage || '-'}`, `ディスプレイ：${s.display || '-'}`, 'OS：Windows 11');
+    if (p.hasOffice) lines.push('Office：Microsoft Office2024(永続版)搭載\n⇒word,excel,PowerPoint等利用可能');
+  }
+  if (p.is_english_kb) lines.push('キーボード：英字配列');
+  const spec = '【スペック】\n' + lines.join('\n');
+  const acc = `【付属品】\n${(p.accessories || []).join('、')}`;
+  // ジャンク品の場合は専用テキスト、通常は瑕疵情報
+  const stateContent = p.isJunk ? JUNK_STATE_TEXT : (p.defect_info || '');
+  const state = `【状態】\n${stateContent}`;
+  // ジャンク品の場合はNOTICE_TEXTを省略
+  const notice = p.isJunk ? '' : NOTICE_TEXT;
+  return `${p.barcode || ''}\n\n${p.intro || ''}\n\n${spec}\n\n${acc}\n\n${state}${notice ? '\n\n' + notice : ''}`;
+};
+
+// OpenAI API（選択したモデルを使用）
+const callOpenAI = async (key, msgs, max = 200) => {
+  const model = localStorage.getItem('openai_model') || 'gpt-4o';
+  // 新しいモデル（4.1系、5系、o1、o3など）はmax_completion_tokens
+  const useNewParam = model.includes('4.1') || model.startsWith('gpt-5') || model.startsWith('o1') || model.startsWith('o3');
+  const body = {
+    model,
+    messages: msgs,
+    ...(useNewParam ? { max_completion_tokens: max } : { max_tokens: max })
+  };
+  const r = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+    body: JSON.stringify(body)
+  });
+  const d = await r.json();
+  if (d.error) throw new Error(d.error.message);
+  return d.choices[0].message.content.trim();
+};
+
+// OCR
+const ocrBarcode = async (key, dataUrl) => {
+  const base64 = dataUrl.split(',')[1];
+  const media = dataUrl.startsWith('data:image/png') ? 'image/png' : 'image/jpeg';
+  const result = await callOpenAI(key, [{
+    role: 'user',
+    content: [
+      { type: 'text', text: 'この画像にある数字の下6桁を返してください　返答は数字の6桁のみで' },
+      { type: 'image_url', image_url: { url: `data:${media};base64,${base64}` } }
+    ]
+  }], 50);
+  return result.trim() || null;
+};
+
+// 画像分類（GPT-4o-mini固定でコスト削減）
+const classifyImages = async (key, images) => {
+  const imageContents = images.map((img, i) => ({
+    type: 'image_url',
+    image_url: { url: img.dataUrl, detail: 'low' }
+  }));
+  
+  const prompt = `これらの中古PC商品画像を分類してください。
+各画像について以下のカテゴリから1つ選んでください：
+- main: PC全体が見える写真（メイン画像）
+- screen: 画面・ディスプレイ（スペック表示含む）
+- keyboard: キーボード
+- side: 側面・ポート類
+- spec: スペック詳細・シール
+- barcode: バーコードラベル
+- other: その他
+
+JSON形式で出力（indexは0から）:
+{"results":[{"index":0,"category":"main"},{"index":1,"category":"screen"},...]}`;
+
+  const r = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...imageContents] }],
+      max_tokens: 500
+    })
+  });
+  const d = await r.json();
+  if (d.error) throw new Error(d.error.message);
+  
+  try {
+    const text = d.choices[0].message.content.trim();
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]).results;
+    }
+  } catch (e) {
+    console.error('分類結果のパースエラー:', e);
+  }
+  return null;
+};
+
+const generateIntro = async (key, p) => {
+  const s = p.specs || {};
+  // 型番から「他 X台セット」を削除
+  const modelClean = (s.product_name || '').replace(/他?\s*\d+台[ｾセ][ｯッ][ﾄト]/g, '').trim();
+  const officeInfo = p.hasOffice ? 'Microsoft Office2024(永続版)搭載' : 'なし';
+  
+  // ジャンク品の場合は専用プロンプト
+  if (p.isJunk) {
+    const prompt = `以下のジャンク品PCの紹介文を3〜4行で作成してください。自然な日本語で。ジャンク品であること、動作保証がないこと、修理・部品取り用であることを明確に伝えてください。
+商品タイプ: ${p.product_type}
+メーカー: ${s.maker}
+型番: ${modelClean}
+CPU: ${s.cpu}
+メモリ: ${s.memory}
+ストレージ: ${s.storage}
+紹介文のみを出力:`;
+    return await callOpenAI(key, [{ role: 'user', content: prompt }], 200);
+  }
+  
+  const prompt = `以下の中古PCの紹介文を3〜4行で作成してください。自然な日本語で。1台の商品として紹介してください。
+商品タイプ: ${p.product_type}
+メーカー: ${s.maker}
+型番: ${modelClean}
+CPU: ${s.cpu}
+メモリ: ${s.memory}
+ストレージ: ${s.storage}
+Office: ${officeInfo}
+紹介文のみを出力:`;
+  return await callOpenAI(key, [{ role: 'user', content: prompt }], 200);
+};
+
+// 画像結合関数（2枚横並び or 4枚グリッド）+ 自動ダウンロード
+const mergeImages = async (images, cols = 2, folder = '') => {
+  const size = 1000; // 1枚あたりのサイズ
+  const rows = Math.ceil(images.length / cols);
+  const canvas = document.createElement('canvas');
+  canvas.width = size * cols;
+  canvas.height = size * rows;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  
+  for (let i = 0; i < images.length; i++) {
+    const img = new Image();
+    await new Promise((resolve) => {
+      img.onload = resolve;
+      img.src = images[i].dataUrl;
+    });
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    ctx.drawImage(img, col * size, row * size, size, size);
+  }
+  
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+  
+  // 自動ダウンロード
+  const timestamp = Date.now();
+  const filename = `_merged_${timestamp}.jpg`;
+  const a = document.createElement('a');
+  a.href = dataUrl;
+  a.download = filename;
+  a.click();
+  
+  return { dataUrl, filename };
+};
+
+// アイコン
+const Icon = ({ name, className = "w-5 h-5" }) => {
+  const icons = {
+    upload: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />,
+    file: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />,
+    key: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />,
+    image: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />,
+    check: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />,
+    x: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />,
+    refresh: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />,
+    left: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />,
+    right: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />,
+    scan: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />,
+    eye: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />,
+    eyeOff: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />,
+    search: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />,
+  };
+  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">{icons[name]}</svg>;
+};
+
+// DropZoneコンポーネント
+const DropZone = ({ title, icon, color, accept, multiple, directory, onFiles, hint }) => {
+  const [isDragging, setIsDragging] = useState(false);
+  const inputRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const dragCounter = useRef(0);
+  
+  const handleDragIn = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current++;
+    if (dragCounter.current === 1) {
+      setIsDragging(true);
+    }
+  };
+  
+  const handleDragOut = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current--;
+    if (dragCounter.current === 0) {
+      setIsDragging(false);
+    }
+  };
+  
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+  
+  const handleDrop = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current = 0;
+    setIsDragging(false);
+    
+    const items = e.dataTransfer.items;
+    const droppedFiles = e.dataTransfer.files;
+    const files = [];
+    
+    console.log('Drop event - items:', items?.length, 'files:', droppedFiles?.length);
+    
+    // webkitGetAsEntryが使える場合（フォルダ対応）
+    let entryError = false;
+    if (items && items.length > 0) {
+      const entries = [];
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].webkitGetAsEntry) {
+          const entry = items[i].webkitGetAsEntry();
+          if (entry) entries.push(entry);
+        }
+      }
+      
+      if (entries.length > 0) {
+        for (const entry of entries) {
+          try {
+            const entryFiles = await readEntry(entry);
+            if (entryFiles.length > 0) {
+              files.push(...entryFiles);
+            } else if (entry.isDirectory) {
+              // フォルダなのにファイルが取得できなかった
+              entryError = true;
+            }
+          } catch (err) {
+            console.error('readEntry error:', err);
+            entryError = true;
+          }
+        }
+      }
+    }
+    
+    // fallback: 通常のファイル
+    if (files.length === 0 && droppedFiles.length > 0) {
+      console.log('Using fallback file handling');
+      for (let i = 0; i < droppedFiles.length; i++) {
+        const f = droppedFiles[i];
+        // フォルダかどうかチェック（size=0, type=空）
+        if (f.size === 0 && f.type === '') {
+          console.log('Detected folder in fallback, skipping:', f.name);
+          entryError = true;
+          continue;
+        }
+        // webkitRelativePathがない場合は名前をセット
+        if (!f.webkitRelativePath) {
+          Object.defineProperty(f, 'webkitRelativePath', {
+            value: f.name,
+            writable: false,
+            configurable: true
+          });
+        }
+        files.push(f);
+      }
+    }
+    
+    console.log('Processed files:', files.length, files.slice(0,5).map(f => f.webkitRelativePath || f.name));
+    
+    if (files.length > 0) {
+      onFiles(files);
+    } else if (entryError) {
+      // フォルダドロップが失敗した場合
+      alert('⚠️ フォルダの読み込みに失敗しました。\n\n日本語フォルダ名はドラッグ&ドロップで対応できない場合があります。\n\n【対処法】\n・下の「フォルダを選択」ボタンを使う\n・または画像ファイルを直接ドラッグ&ドロップ');
+    } else {
+      console.warn('No files found after processing drop');
+    }
+  };
+  
+  const readEntry = async (entry, path = '') => {
+    return new Promise(async (resolve) => {
+      const files = [];
+      
+      // タイムアウト設定（10秒）
+      const timeout = setTimeout(() => {
+        console.warn('readEntry timeout for:', path + entry.name);
+        resolve(files);
+      }, 10000);
+      
+      try {
+        if (entry.isFile) {
+          entry.file((file) => {
+            clearTimeout(timeout);
+            // webkitRelativePathを模倣
+            Object.defineProperty(file, 'webkitRelativePath', {
+              value: path + file.name,
+              writable: false,
+              configurable: true
+            });
+            files.push(file);
+            resolve(files);
+          }, (err) => {
+            clearTimeout(timeout);
+            console.error('file() error:', err);
+            resolve(files);
+          });
+        } else if (entry.isDirectory) {
+          const reader = entry.createReader();
+          const readAllEntries = async () => {
+            return new Promise((res, rej) => {
+              const results = [];
+              const readBatch = () => {
+                reader.readEntries((batch) => {
+                  if (batch.length === 0) {
+                    res(results);
+                  } else {
+                    results.push(...batch);
+                    readBatch();
+                  }
+                }, (err) => {
+                  console.error('readEntries error:', err);
+                  // エラーでも今まで取得した分は返す
+                  rej(err);
+                });
+              };
+              readBatch();
+            });
+          };
+          
+          try {
+            const entries = await readAllEntries();
+            for (const child of entries) {
+              const childFiles = await readEntry(child, path + entry.name + '/');
+              files.push(...childFiles);
+            }
+          } catch (err) {
+            // readAllEntriesでエラーが出た場合（日本語フォルダ名など）
+            console.error('Failed to read directory:', entry.name, err);
+          }
+          clearTimeout(timeout);
+          resolve(files);
+        } else {
+          clearTimeout(timeout);
+          resolve(files);
+        }
+      } catch (err) {
+        clearTimeout(timeout);
+        console.error('readEntry catch error:', err);
+        resolve(files);
+      }
+    });
+  };
+  
+  const handleClick = () => {
+    if (directory) {
+      inputRef.current?.click();
+    } else {
+      inputRef.current?.click();
+    }
+  };
+  
+  const handleFileClick = (e) => {
+    e.stopPropagation();
+    fileInputRef.current?.click();
+  };
+  
+  const handleChange = (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length > 0) {
+      onFiles(files);
+    }
+  };
+  
+  const colorClasses = {
+    blue: { border: 'hover:border-blue-400', icon: 'text-blue-500', dragBg: 'bg-blue-50 border-blue-400' },
+    green: { border: 'hover:border-green-400', icon: 'text-green-500', dragBg: 'bg-green-50 border-green-400' },
+    red: { border: 'hover:border-red-400', icon: 'text-red-500', dragBg: 'bg-red-50 border-red-400' },
+    orange: { border: 'hover:border-orange-400', icon: 'text-orange-500', dragBg: 'bg-orange-50 border-orange-400' },
+  };
+  const c = colorClasses[color] || colorClasses.blue;
+  
+  return (
+    <div 
+      className="bg-white rounded shadow p-4"
+      onDragEnter={handleDragIn}
+      onDragLeave={handleDragOut}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      <h3 className="font-bold mb-3 flex items-center gap-2">
+        <Icon name={icon} className={`w-5 h-5 ${c.icon}`}/>{title}
+      </h3>
+      <div
+        onClick={handleClick}
+        className={`border-2 border-dashed rounded p-4 text-center cursor-pointer transition-all ${isDragging ? c.dragBg : `border-gray-300 ${c.border}`}`}
+      >
+        <Icon name="upload" className="w-6 h-6 mx-auto mb-1 text-gray-400"/>
+        <span className="text-sm text-gray-600">{isDragging ? 'ドロップ！' : (hint || 'クリック or ドラッグ')}</span>
+        {directory && (
+          <input
+            ref={inputRef}
+            type="file"
+            accept={accept}
+            multiple={multiple}
+            webkitdirectory=""
+            directory=""
+            className="hidden"
+            onChange={handleChange}
+          />
+        )}
+        {!directory && (
+          <input
+            ref={inputRef}
+            type="file"
+            accept={accept}
+            multiple={multiple}
+            className="hidden"
+            onChange={handleChange}
+          />
+        )}
+      </div>
+      {directory && (
+        <div className="mt-2 flex gap-2">
+          <button
+            onClick={handleClick}
+            className="flex-1 text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 py-1 px-2 rounded border"
+          >
+            📁 フォルダを選択
+          </button>
+          <button
+            onClick={handleFileClick}
+            className="flex-1 text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 py-1 px-2 rounded border"
+          >
+            📄 ファイルを選択
+          </button>
+        </div>
+      )}
+      {directory && (
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={accept}
+          multiple={true}
+          className="hidden"
+          onChange={handleChange}
+        />
+      )}
+    </div>
+  );
+};
+
+// メインApp
+function App() {
+  const [step, setStep] = useState(1);
+  const [apiKey, setApiKey] = useState(localStorage.getItem('openai_key') || '');
+  const [aiModel, setAiModel] = useState(localStorage.getItem('openai_model') || 'gpt-4o');
+  const [purchaseData, setPurchaseData] = useState([]);
+  const [priceData, setPriceData] = useState([]);
+  const [refPriceData, setRefPriceData] = useState([]);  // 価格参照データ（類似商品検索用）
+  const [products, setProducts] = useState([]);
+  const [currentIdx, setCurrentIdx] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
+  const [dragIdx, setDragIdx] = useState(null);
+  const [selectedImages, setSelectedImages] = useState([]);
+  const [imageHistory, setImageHistory] = useState([]); // 履歴（Undo用）
+  const [zoomImage, setZoomImage] = useState(null); // 拡大表示用
+  const [priceSearchModal, setPriceSearchModal] = useState(null);  // 価格検索モーダル用
+
+  // 初期ロード時にlocalStorageから復元
+  useEffect(() => {
+    try {
+      const savedPurchase = localStorage.getItem('mercari_purchase_data');
+      const savedPrice = localStorage.getItem('mercari_price_data');
+      if (savedPurchase) {
+        const data = JSON.parse(savedPurchase);
+        setPurchaseData(data);
+        console.log(`仕入データ復元: ${data.length}件`);
+      }
+      if (savedPrice) {
+        const data = JSON.parse(savedPrice);
+        setPriceData(data);
+        console.log(`価格データ復元: ${data.length}件`);
+      }
+    } catch (e) {
+      console.error('データ復元エラー:', e);
+    }
+  }, []);
+
+  // 仕入データ変更時に保存
+  useEffect(() => {
+    if (purchaseData.length > 0) {
+      try {
+        localStorage.setItem('mercari_purchase_data', JSON.stringify(purchaseData));
+        console.log(`仕入データ保存: ${purchaseData.length}件`);
+      } catch (e) {
+        console.error('仕入データ保存エラー:', e);
+      }
+    }
+  }, [purchaseData]);
+
+  // 価格データ変更時に保存
+  useEffect(() => {
+    if (priceData.length > 0) {
+      try {
+        localStorage.setItem('mercari_price_data', JSON.stringify(priceData));
+        console.log(`価格データ保存: ${priceData.length}件`);
+      } catch (e) {
+        console.error('価格データ保存エラー:', e);
+      }
+    }
+  }, [priceData]);
+
+  // データクリア関数
+  const clearSavedData = () => {
+    if (confirm('保存されたCSV・価格データをクリアしますか？')) {
+      localStorage.removeItem('mercari_purchase_data');
+      localStorage.removeItem('mercari_price_data');
+      setPurchaseData([]);
+      setPriceData([]);
+      setMessage('保存データをクリアしました');
+    }
+  };
+
+  // APIキー保存
+  const saveApiKey = () => {
+    localStorage.setItem('openai_key', apiKey);
+    localStorage.setItem('openai_model', aiModel);
+    setMessage('APIキー・モデル保存完了');
+  };
+
+  // APIテスト
+  const testApi = async () => {
+    if (!apiKey) return setMessage('❌ APIキーを入力してください');
+    setLoading(true);
+    setMessage('テスト中...');
+    try {
+      const useNewParam = aiModel.includes('4.1') || aiModel.startsWith('gpt-5') || aiModel.startsWith('o1') || aiModel.startsWith('o3');
+      const body = {
+        model: aiModel,
+        messages: [{ role: 'user', content: 'Say OK' }],
+        ...(useNewParam ? { max_completion_tokens: 50 } : { max_tokens: 50 })
+      };
+      const r = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify(body)
+      });
+      const d = await r.json();
+      if (d.error) {
+        setMessage(`❌ ${aiModel}: ${d.error.message}`);
+      } else {
+        setMessage(`✅ ${aiModel}: 接続OK！`);
+      }
+    } catch (e) {
+      setMessage(`❌ エラー: ${e.message}`);
+    }
+    setLoading(false);
+  };
+
+  // 仕入CSV読込（ファイル配列を受け取る）
+  const handlePurchaseFiles = (files) => {
+    const all = [];
+    let done = 0;
+    files.forEach(f => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        Papa.parse(ev.target.result, {
+          header: true, skipEmptyLines: true,
+          complete: (r) => {
+            all.push(...r.data);
+            if (++done === files.length) {
+              setPurchaseData(all);
+              setMessage(`仕入CSV: ${all.length}件`);
+            }
+          }
+        });
+      };
+      reader.readAsText(f, 'Shift_JIS');
+    });
+  };
+
+  // 価格Excel読込（ファイル配列を受け取る）
+  const handlePriceFiles = (files) => {
+    const all = [];
+    let done = 0;
+    files.forEach(f => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const wb = XLSX.read(new Uint8Array(ev.target.result), { type: 'array' });
+        const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+        all.push(...json);
+        if (++done === files.length) {
+          setPriceData(all);
+          setMessage(`価格: ${all.length}件`);
+        }
+      };
+      reader.readAsArrayBuffer(f);
+    });
+  };
+
+  // 価格参照データ読込（類似商品検索用）
+  const handleRefPriceFiles = (files) => {
+    const all = [];
+    let done = 0;
+    files.forEach(f => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const wb = XLSX.read(new Uint8Array(ev.target.result), { type: 'array' });
+        const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+        // Keywordとメルカリ販売価格(入力)があるものだけ抽出
+        const valid = json.filter(r => r['Keyword'] && r['メルカリ販売価格(入力)']);
+        all.push(...valid);
+        if (++done === files.length) {
+          // 重複除去（Keywordでグルーピング）
+          const grouped = {};
+          all.forEach(r => {
+            const kw = String(r['Keyword']).trim();
+            const price = parseInt(r['メルカリ販売価格(入力)']);
+            if (!price || isNaN(price)) return;
+            if (!grouped[kw]) grouped[kw] = [];
+            grouped[kw].push(price);
+          });
+          const unique = Object.entries(grouped).map(([kw, prices]) => ({
+            keyword: kw,
+            price: Math.round(prices.reduce((a,b) => a+b, 0) / prices.length), // 平均
+            count: prices.length
+          }));
+          setRefPriceData(unique);
+          setMessage(`価格参照: ${unique.length}件（${all.length}行から）`);
+        }
+      };
+      reader.readAsArrayBuffer(f);
+    });
+  };
+
+  // 類似商品検索
+  const searchSimilarProducts = (product) => {
+    if (refPriceData.length === 0) return [];
+    const s = product.specs || {};
+    const searchTerms = [
+      s.maker,
+      s.product_name,
+      s.cpu,
+      s.memory,
+      s.storage
+    ].filter(Boolean).map(t => String(t).toLowerCase());
+    
+    // スコア計算
+    const results = refPriceData.map(ref => {
+      const kw = ref.keyword.toLowerCase();
+      let score = 0;
+      searchTerms.forEach(term => {
+        if (kw.includes(term)) score += 10;
+        // 部分一致も考慮
+        term.split(/\s+/).forEach(word => {
+          if (word.length > 2 && kw.includes(word)) score += 3;
+        });
+      });
+      return { ...ref, score };
+    }).filter(r => r.score > 0);
+    
+    // スコア順にソート
+    results.sort((a, b) => b.score - a.score);
+    return results.slice(0, 10);
+  };
+
+  // 画像読込（ファイル配列を受け取る - フォルダでもファイル直接でもOK）
+  const handleImageFiles = async (files) => {
+    console.log('handleImageFiles called with', files.length, 'files');
+    setLoading(true);
+    setMessage('画像読込中...');
+    const map = {};
+    
+    for (const f of files) {
+      const path = f.webkitRelativePath || f.name;
+      console.log('Processing file:', path, 'type:', f.type, 'size:', f.size);
+      
+      const parts = path.split('/');
+      let folder, name;
+      
+      if (parts.length >= 2) {
+        // フォルダ構造がある場合
+        folder = parts[parts.length - 2];
+        name = parts[parts.length - 1];
+      } else {
+        // ファイル直接の場合：ファイル名から拡張子を除いた部分をフォルダ名に
+        // または数字部分でグルーピング
+        name = f.name;
+        // ファイル名のパターンを解析（例: 001_01.jpg → 001がフォルダ）
+        const match = name.match(/^(\d+)[_-]/);
+        if (match) {
+          folder = match[1];
+        } else {
+          // パターンがない場合は拡張子を除いたファイル名
+          folder = name.replace(/\.[^.]+$/, '');
+        }
+      }
+      
+      const ext = name.split('.').pop().toLowerCase();
+      if (!['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)) {
+        console.log('Skipping non-image file:', name);
+        continue;
+      }
+      
+      if (!map[folder]) map[folder] = [];
+      
+      try {
+        const dataUrl = await new Promise((resolve, reject) => {
+          const rd = new FileReader();
+          rd.onload = e => resolve(e.target.result);
+          rd.onerror = e => reject(e);
+          rd.readAsDataURL(f);
+        });
+        map[folder].push({ id: `${folder}_${name}`, filename: name, dataUrl, excluded: false });
+      } catch (err) {
+        console.error('FileReader error for', name, err);
+      }
+    }
+    
+    console.log('Grouped into folders:', Object.keys(map));
+    
+    const prods = Object.entries(map).sort().map(([folder, imgs]) => ({
+      id: folder, folder, images: imgs.sort((a, b) => a.filename.localeCompare(b.filename)), barcode: null
+    }));
+    
+    if (prods.length === 0) {
+      setMessage('画像が見つかりませんでした');
+      setLoading(false);
+      return;
+    }
+    
+    setProducts(prods);
+    setMessage(`${prods.length}商品`);
+    setStep(2);
+    setLoading(false);
+  };
+
+  // OCR
+  const doOcr = async (idx) => {
+    const p = products[idx];
+    if (!p.images.length || !apiKey) return;
+    setLoading(true);
+    try {
+      const bc = await ocrBarcode(apiKey, p.images[p.images.length - 1].dataUrl);
+      if (bc) {
+        const np = [...products];
+        np[idx].barcode = bc;
+        setProducts(np);
+        setMessage(`OCR成功: ${bc}`);
+      } else {
+        alert('読取失敗: バーコードが見つかりませんでした');
+      }
+    } catch (e) {
+      console.error('OCR Error:', e);
+      alert('読取失敗: ' + e.message);
+    }
+    setLoading(false);
+  };
+
+  const doOcrAll = async () => {
+    if (!apiKey) return alert('APIキーを設定してください');
+    setLoading(true);
+    let successCount = 0;
+    for (let i = 0; i < products.length; i++) {
+      if (products[i].barcode) continue;
+      try {
+        const bc = await ocrBarcode(apiKey, products[i].images[products[i].images.length - 1].dataUrl);
+        if (bc) {
+          const np = [...products];
+          np[i].barcode = bc;
+          setProducts(np);
+          successCount++;
+        }
+      } catch (e) {
+        console.error('OCR error for product', i, e);
+      }
+    }
+    setMessage(`OCR完了: ${successCount}件成功`);
+    setLoading(false);
+  };
+
+  // 画像並び替え
+  const moveImage = (from, to) => {
+    const p = products[currentIdx];
+    const imgs = [...p.images];
+    const [moved] = imgs.splice(from, 1);
+    imgs.splice(to, 0, moved);
+    const np = [...products];
+    np[currentIdx] = { ...p, images: imgs };
+    setProducts(np);
+  };
+
+  const toggleExclude = (imgIdx) => {
+    const np = [...products];
+    np[currentIdx].images[imgIdx].excluded = !np[currentIdx].images[imgIdx].excluded;
+    setProducts(np);
+  };
+
+  // 自動画像並び替え
+  const autoSortImages = async () => {
+    if (!apiKey) return setMessage('❌ APIキーを設定してください');
+    const cur = products[currentIdx];
+    if (!cur) return;
+    
+    const activeImgs = cur.images.filter(img => !img.excluded);
+    if (activeImgs.length < 2) return setMessage('並び替える画像がありません');
+    
+    setLoading(true);
+    setMessage('🔄 画像を分類中...');
+    
+    try {
+      const classifications = await classifyImages(apiKey, activeImgs);
+      if (!classifications) {
+        setMessage('❌ 分類に失敗しました');
+        setLoading(false);
+        return;
+      }
+      
+      // カテゴリごとに分類
+      const byCategory = { main: [], screen: [], keyboard: [], side: [], spec: [], barcode: [], other: [] };
+      classifications.forEach(c => {
+        const img = activeImgs[c.index];
+        if (img && byCategory[c.category]) {
+          byCategory[c.category].push(img);
+        } else if (img) {
+          byCategory.other.push(img);
+        }
+      });
+      
+      // 並び順: メイン2 → 画面3 → キーボード2 → 側面(結合) → スペック(結合) → その他 → バーコード
+      const sorted = [];
+      const toMerge = [];
+      
+      // メイン（最大2枚）
+      sorted.push(...byCategory.main.slice(0, 2));
+      if (byCategory.main.length > 2) byCategory.other.push(...byCategory.main.slice(2));
+      
+      // 画面（最大3枚、多い場合は結合候補）
+      if (byCategory.screen.length <= 3) {
+        sorted.push(...byCategory.screen);
+      } else {
+        sorted.push(...byCategory.screen.slice(0, 2));
+        toMerge.push({ name: 'screen', imgs: byCategory.screen.slice(2) });
+      }
+      
+      // キーボード（最大2枚）
+      sorted.push(...byCategory.keyboard.slice(0, 2));
+      if (byCategory.keyboard.length > 2) byCategory.other.push(...byCategory.keyboard.slice(2));
+      
+      // 側面（4枚以上なら結合）
+      if (byCategory.side.length >= 4) {
+        toMerge.push({ name: 'side', imgs: byCategory.side.slice(0, 4) });
+        if (byCategory.side.length > 4) byCategory.other.push(...byCategory.side.slice(4));
+      } else {
+        sorted.push(...byCategory.side);
+      }
+      
+      // スペック（2枚以上なら結合）
+      if (byCategory.spec.length >= 2) {
+        toMerge.push({ name: 'spec', imgs: byCategory.spec });
+      } else {
+        sorted.push(...byCategory.spec);
+      }
+      
+      // その他
+      sorted.push(...byCategory.other);
+      
+      // 結合処理
+      for (const item of toMerge) {
+        if (item.imgs.length >= 2) {
+          setMessage(`🔄 ${item.name}画像を結合中...`);
+          const cols = item.imgs.length <= 2 ? 2 : 2;
+          const { dataUrl, filename } = await mergeImages(item.imgs, cols);
+          sorted.push({ id: `merged_${Date.now()}_${item.name}`, filename, dataUrl, excluded: false });
+        }
+      }
+      
+      // バーコード（最後）
+      sorted.push(...byCategory.barcode);
+      
+      // 元の画像で結合されたものをexcluded扱いに
+      const mergedIds = new Set(toMerge.flatMap(t => t.imgs.map(i => i.id)));
+      const finalImages = cur.images.map(img => {
+        if (mergedIds.has(img.id)) return { ...img, excluded: true };
+        return img;
+      });
+      
+      // 並び替え結果を反映（excluded以外を置き換え）
+      const excludedImgs = finalImages.filter(img => img.excluded);
+      const newImages = [...sorted, ...excludedImgs];
+      
+      const np = [...products];
+      np[currentIdx].images = newImages;
+      setProducts(np);
+      setMessage(`✅ 並び替え完了！（${sorted.length}枚）`);
+    } catch (e) {
+      setMessage(`❌ エラー: ${e.message}`);
+    }
+    setLoading(false);
+  };
+
+  // データ処理
+  const processProducts = () => {
+    setLoading(true);
+    // 単品データを優先（「他」がついてないもの）
+    const findPurchase = (bc) => {
+      const matches = purchaseData.filter(r => {
+        const v = String(r['バーコード番号'] || '').replace(/[^0-9]/g, '');
+        return v.length >= 6 && v.slice(-6) === bc;
+      });
+      if (matches.length === 0) return null;
+      // 「他」がないもの（単品）を優先
+      const single = matches.find(r => !String(r['バーコード番号'] || '').includes('他'));
+      return single || matches[0];
+    };
+    // バーコード番号の下6桁で価格を照合
+    const findPrice = (bc) => priceData.find(r => {
+      const v = String(r['バーコード番号'] || '').replace(/[^0-9]/g, '');
+      return v.length >= 6 && v.slice(-6) === bc;
+    });
+
+    const np = products.map(p => {
+      if (!p.barcode) return { ...p, status: 'no_barcode' };
+      const row = findPurchase(p.barcode);
+      if (!row) return { ...p, status: 'no_data' };
+      const specs = extractSpecs(row);
+      const type = detectProductType(row, specs);
+      const priceRow = findPrice(p.barcode);
+      const price = priceRow ? parseInt(priceRow['メルカリ販売価格(入力)']) || null : null;
+      const rank = String(row['評価点'] || '').trim().toUpperCase();
+      const acc = parseAccessories(row['付属品情報'] || '');
+      const defect = [row['瑕疵情報1'], row['瑕疵情報2']].filter(x => x && !x.includes('中古品の為')).join('、');
+      return {
+        ...p, status: 'ok', specs, product_type: type, price, rank,
+        condition: CONDITION_MAP[rank] || 'やや傷や汚れあり',
+        accessories: acc, defect_info: defect,
+        is_english_kb: (row['付属品情報'] || '').includes('英字KB'),
+        hasOffice: p.hasOffice || false,  // OFFICE搭載フラグを保持
+        isJunk: p.isJunk || false  // ジャンク品フラグを保持
+      };
+    });
+    setProducts(np);
+    setStep(3);
+    setLoading(false);
+  };
+
+  // プレビュー画面へ（紹介文生成）
+  const goToPreview = async () => {
+    setLoading(true);
+    setMessage('紹介文生成中...');
+    const np = [...products];
+    
+    for (let i = 0; i < np.length; i++) {
+      if (!np[i].barcode || np[i].intro) continue;
+      try {
+        np[i].intro = apiKey ? await generateIntro(apiKey, np[i]) : `${np[i].specs?.maker || ''}の中古PCです。`;
+        // タイトルと説明文も事前生成
+        np[i].title = np[i].title || makeTitle(np[i]);
+        np[i].description = np[i].description || makeDescription(np[i]);
+        setProducts([...np]);
+        setMessage(`紹介文生成中... (${i+1}/${np.length})`);
+      } catch (e) {
+        console.error('紹介文生成エラー:', e);
+        np[i].intro = `${np[i].specs?.maker || ''}の中古PCです。`;
+        np[i].title = np[i].title || makeTitle(np[i]);
+        np[i].description = np[i].description || makeDescription(np[i]);
+      }
+    }
+    
+    // バーコードある商品のタイトル・説明文を生成
+    np.forEach(p => {
+      if (p.barcode && !p.title) p.title = makeTitle(p);
+      if (p.barcode && !p.description) p.description = makeDescription(p);
+    });
+    
+    setProducts(np);
+    setCurrentIdx(0);
+    setStep(4);
+    setLoading(false);
+    setMessage('');
+  };
+
+  // CSV生成
+  const generateCsv = async () => {
+    setLoading(true);
+    setMessage('CSV生成中...');
+    
+    // メルカリCSVヘッダー（正しい順序）
+    const headers = [
+      ...Array.from({length:20}, (_,i) => `商品画像名_${i+1}`),
+      '商品名', '商品説明',
+      'SKU1_種類', 'SKU1_在庫数', 'SKU1_商品管理コード', 'SKU1_JANコード',
+      'ブランドID', '販売価格', 'カテゴリID', '商品の状態',
+      '配送方法', '発送元の地域', '発送までの日数', '商品ステータス', '配送料の負担'
+    ];
+    
+    // フィルター（バーコードがあればOK、価格なしは999999）
+    const okProducts = products.filter(p => p.barcode);
+    
+    const rows = okProducts.map(p => {
+      // 画像ファイル名（バーコード画像除く、元のファイル名をそのまま使用、最大20枚）
+      const imgs = p.images
+        .filter((img, i) => i < p.images.length - 1 && !img.excluded)
+        .slice(0, 20)
+        .map(img => img.filename);  // 元のファイル名をそのまま使用
+      while (imgs.length < 20) imgs.push('');
+      
+      const cat = ['intel_mac', 'apple_silicon'].includes(p.product_type) ? CONFIG.category_macbook : CONFIG.category_windows;
+      const conditionCode = CONFIG.condition_map[p.condition] || 4;
+      const price = p.price || 999999;  // 価格がなければ999999
+      
+      return [
+        ...imgs,                           // 商品画像名_1～20
+        p.title || makeTitle(p),           // 商品名（編集済みがあればそれを使用）
+        p.description || makeDescription(p), // 商品説明（編集済みがあればそれを使用）
+        '',                                // SKU1_種類
+        1,                                 // SKU1_在庫数
+        '',                                // SKU1_商品管理コード（空）
+        '',                                // SKU1_JANコード
+        '',                                // ブランドID
+        price,                             // 販売価格
+        cat,                               // カテゴリID
+        conditionCode,                     // 商品の状態
+        CONFIG.shipping_method,            // 配送方法
+        CONFIG.region,                     // 発送元の地域
+        CONFIG.shipping_days,              // 発送までの日数
+        1,                                 // 商品ステータス（1=下書き）
+        CONFIG.shipping_fee                // 配送料の負担
+      ];
+    });
+    
+    // CSV生成（Shift-JIS、改行はそのまま）
+    const escapeForCsv = (str) => {
+      const s = String(str);
+      // ダブルクォートをエスケープ
+      if (s.includes('"') || s.includes(',') || s.includes('\n') || s.includes('\r')) {
+        return '"' + s.replace(/"/g, '""') + '"';
+      }
+      return s;
+    };
+    
+    const csvContent = [headers, ...rows].map(r => r.map(c => escapeForCsv(c)).join(',')).join('\r\n');
+    
+    // Shift-JISに変換してBlob作成
+    const unicodeArray = Encoding.stringToCode(csvContent);
+    const sjisArray = Encoding.convert(unicodeArray, { to: 'SJIS', from: 'UNICODE' });
+    const blob = new Blob([new Uint8Array(sjisArray)], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `mercari_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    setMessage(`${rows.length}商品のCSVを生成しました`);
+    setStep(5);
+    setLoading(false);
+  };
+
+  const cur = products[currentIdx];
+
+  return (
+    <div className="min-h-screen bg-gray-100">
+      <header className="bg-red-500 text-white py-3 px-6 shadow">
+        <h1 className="text-xl font-bold">メルカリCSV生成ツール</h1>
+      </header>
+
+      <div className="max-w-6xl mx-auto p-4">
+        {/* ステータス */}
+        <div className="bg-white rounded shadow p-3 mb-4 flex gap-6 text-sm items-center">
+          <span>仕入: <b>{purchaseData.length}</b></span>
+          <span>価格: <b>{priceData.length}</b></span>
+          <span className="text-orange-600">参照: <b>{refPriceData.length}</b></span>
+          <span>API: {apiKey ? '✓' : '未設定'}</span>
+          <span className="text-purple-600">🤖 {aiModel}</span>
+          {(purchaseData.length > 0 || priceData.length > 0 || refPriceData.length > 0) && (
+            <button onClick={clearSavedData} className="text-red-500 hover:text-red-700 text-xs">🗑️ データクリア</button>
+          )}
+          <span className="ml-auto text-gray-500">Step {step}/5</span>
+        </div>
+
+        {message && <div className={`px-4 py-2 rounded mb-4 border ${message.startsWith('❌') ? 'bg-red-50 border-red-200 text-red-700' : message.startsWith('✅') ? 'bg-green-50 border-green-200 text-green-700' : 'bg-blue-50 border-blue-200 text-blue-700'}`}>{message}</div>}
+
+        {/* Step 1 */}
+        {step === 1 && (
+          <div>
+            {/* 保存データがある場合の表示 */}
+            {(purchaseData.length > 0 || priceData.length > 0 || refPriceData.length > 0) && (
+              <div className="bg-green-50 border border-green-200 rounded p-3 mb-4 text-sm">
+                <span className="font-medium text-green-700">💾 保存済みデータ: </span>
+                {purchaseData.length > 0 && <span className="mr-3">仕入CSV {purchaseData.length}件</span>}
+                {priceData.length > 0 && <span className="mr-3">価格データ {priceData.length}件</span>}
+                {refPriceData.length > 0 && <span>価格参照 {refPriceData.length}件</span>}
+                <span className="text-green-600 ml-2">（自動復元済み）</span>
+              </div>
+            )}
+            <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+              <DropZone
+                title="仕入CSV"
+                icon="file"
+                color="blue"
+                accept=".csv"
+                multiple={true}
+                onFiles={handlePurchaseFiles}
+              />
+              <DropZone
+                title="価格Excel"
+                icon="file"
+                color="green"
+                accept=".xlsx,.xls,.csv"
+                multiple={true}
+                onFiles={handlePriceFiles}
+              />
+              <DropZone
+                title="価格参照"
+                icon="search"
+                color="orange"
+                accept=".xlsx,.xls"
+                multiple={true}
+                onFiles={handleRefPriceFiles}
+                hint="類似商品検索用"
+              />
+              <div className="bg-white rounded shadow p-4">
+                <h3 className="font-bold mb-3 flex items-center gap-2"><Icon name="key" className="w-5 h-5 text-purple-500"/>OpenAI API</h3>
+                <input type="password" placeholder="sk-..." value={apiKey} onChange={e => setApiKey(e.target.value)} className="w-full border rounded px-2 py-1 mb-2 text-sm"/>
+                <select value={aiModel} onChange={e => setAiModel(e.target.value)} className="w-full border rounded px-2 py-1 mb-2 text-sm">
+                  <option value="gpt-4o">gpt-4o</option>
+                  <option value="gpt-4o-mini">gpt-4o-mini</option>
+                  <option value="gpt-4.1">gpt-4.1</option>
+                  <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+                  <option value="gpt-5.1">gpt-5.1</option>
+                  <option value="o1">o1</option>
+                  <option value="o3-mini">o3-mini</option>
+                </select>
+                <div className="flex gap-2">
+                  <button onClick={saveApiKey} className="flex-1 bg-purple-500 text-white rounded py-1 text-sm hover:bg-purple-600">保存</button>
+                  <button onClick={testApi} disabled={loading} className="flex-1 bg-blue-500 text-white rounded py-1 text-sm hover:bg-blue-600 disabled:opacity-50">テスト</button>
+                </div>
+              </div>
+              <DropZone
+                title="画像"
+                icon="image"
+                color="red"
+                accept="image/*"
+                multiple={true}
+                directory={true}
+                onFiles={handleImageFiles}
+                hint="ドラッグ or 下のボタン"
+              />
+            </div>
+            {/* 商品データがある場合、Step2に戻れるボタン */}
+            {products.length > 0 && (
+              <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded flex items-center justify-between">
+                <span className="text-yellow-800">📦 編集中の商品データがあります（{products.length}件）</span>
+                <button onClick={() => setStep(2)} className="px-4 py-2 bg-yellow-500 text-white rounded hover:bg-yellow-600">
+                  Step2に戻る →
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Step 2: 画像編集 */}
+        {step === 2 && cur && (() => {
+          const activeImages = cur.images.filter(img => !img.excluded);
+          const excludedImages = cur.images.filter(img => img.excluded);
+          const uploadCount = activeImages.length > 0 ? activeImages.length - 1 : 0; // バーコード以外
+          
+          // 履歴に保存する関数
+          const saveHistory = () => {
+            setImageHistory(prev => [...prev, JSON.parse(JSON.stringify(cur.images))]);
+          };
+          
+          // Undo関数
+          const undoMerge = () => {
+            if (imageHistory.length === 0) return;
+            const np = [...products];
+            np[currentIdx].images = imageHistory[imageHistory.length - 1];
+            setProducts(np);
+            setImageHistory(prev => prev.slice(0, -1));
+          };
+          
+          return (
+          <div className="bg-white rounded shadow">
+            <div className="border-b p-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <button onClick={() => { setCurrentIdx(Math.max(0, currentIdx-1)); setImageHistory([]); }} disabled={currentIdx===0} className="p-1 rounded hover:bg-gray-100 disabled:opacity-30"><Icon name="left"/></button>
+                <span className="font-bold">{currentIdx+1}/{products.length}</span>
+                <button onClick={() => { setCurrentIdx(Math.min(products.length-1, currentIdx+1)); setImageHistory([]); }} disabled={currentIdx===products.length-1} className="p-1 rounded hover:bg-gray-100 disabled:opacity-30"><Icon name="right"/></button>
+                <span className="text-gray-500">{cur.folder}</span>
+                {cur.barcode && <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded text-sm">{cur.barcode}</span>}
+                <label className="flex items-center gap-1 ml-4 cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    checked={cur.hasOffice || false}
+                    onChange={e => { const np = [...products]; np[currentIdx].hasOffice = e.target.checked; setProducts(np); }}
+                    className="w-4 h-4"
+                  />
+                  <span className="text-sm font-medium text-blue-600">📦 OFFICE搭載</span>
+                </label>
+                <label className="flex items-center gap-1 ml-2 cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    checked={cur.isJunk || false}
+                    onChange={e => { const np = [...products]; np[currentIdx].isJunk = e.target.checked; setProducts(np); }}
+                    className="w-4 h-4"
+                  />
+                  <span className="text-sm font-medium text-red-600">⚠️ ジャンク品</span>
+                </label>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className={`text-sm font-bold ${uploadCount <= 10 ? 'text-green-600' : 'text-red-600'}`}>
+                  出品画像: {uploadCount}枚 {uploadCount > 10 && '⚠️ 10枚以下にしてください'}
+                </span>
+                <button onClick={doOcrAll} disabled={loading} className="px-3 py-1 bg-purple-500 text-white rounded text-sm hover:bg-purple-600 disabled:opacity-50">
+                  {loading ? '処理中...' : '全OCR'}
+                </button>
+              </div>
+            </div>
+
+            <div className="flex">
+              {/* 商品リスト */}
+              <div className="w-44 border-r bg-gray-50 p-2 max-h-[600px] overflow-y-auto">
+                {products.map((p, i) => {
+                  const pActive = p.images.filter(img => !img.excluded);
+                  const pUpload = pActive.length > 0 ? pActive.length - 1 : 0;
+                  return (
+                  <button key={p.id} onClick={() => { setCurrentIdx(i); setSelectedImages([]); setImageHistory([]); }} className={`w-full text-left px-2 py-1 rounded text-sm truncate ${i === currentIdx ? 'bg-blue-500 text-white' : 'hover:bg-gray-200'}`}>
+                    {i+1}. {p.folder} {p.barcode && '✓'} <span className={pUpload > 10 ? 'text-red-400' : ''}>[{pUpload}]</span>
+                  </button>
+                  );
+                })}
+              </div>
+
+              {/* メイン編集エリア */}
+              <div className="flex-1 p-4 overflow-y-auto max-h-[600px]">
+                {/* 出品画像（バーコード以外） */}
+                <div className="mb-4">
+                  <div className="flex items-center gap-2 mb-2 flex-wrap">
+                    <h4 className="font-bold text-sm">📷 出品画像（最後の1枚=バーコード）</h4>
+                    <span className="text-xs text-gray-500">クリック:選択 / ダブルクリック:拡大</span>
+                    {selectedImages.length >= 2 && (
+                      <button onClick={async () => {
+                        saveHistory();
+                        const selected = selectedImages.map(idx => cur.images.find((img, i) => i === idx)).filter(Boolean);
+                        if (selected.length < 2) return;
+                        const cols = selected.length <= 2 ? 2 : 2;
+                        const { dataUrl, filename } = await mergeImages(selected, cols);
+                        const np = [...products];
+                        const newImg = { id: `merged_${Date.now()}`, filename, dataUrl, excluded: false };
+                        // 元の位置（最初に選択した画像の位置）に挿入
+                        const firstIdx = Math.min(...selectedImages);
+                        const newImages = cur.images.map((img, i) => selectedImages.includes(i) ? {...img, excluded: true} : img);
+                        newImages.splice(firstIdx, 0, newImg);
+                        np[currentIdx].images = newImages;
+                        setProducts(np);
+                        setSelectedImages([]);
+                      }} className="px-2 py-1 bg-blue-500 text-white rounded text-xs">
+                        {selectedImages.length}枚を結合
+                      </button>
+                    )}
+                    {selectedImages.length > 0 && (
+                      <button onClick={() => setSelectedImages([])} className="px-2 py-1 bg-gray-300 text-gray-700 rounded text-xs">選択解除</button>
+                    )}
+                    {imageHistory.length > 0 && (
+                      <button onClick={undoMerge} className="px-2 py-1 bg-yellow-500 text-white rounded text-xs">↩ 戻す ({imageHistory.length})</button>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {cur.images.map((img, i) => {
+                      if (img.excluded) return null;
+                      const activeIdx = activeImages.indexOf(img);
+                      const isBarcode = activeIdx === activeImages.length - 1;
+                      const isSelected = selectedImages.includes(i);
+                      const displayNum = activeIdx + 1;
+                      return (
+                      <div key={img.id} 
+                        draggable={!isBarcode}
+                        onDragStart={() => !isBarcode && setDragIdx(i)} 
+                        onDragOver={e => e.preventDefault()} 
+                        onDrop={() => { if (dragIdx !== null && dragIdx !== i) moveImage(dragIdx, i); setDragIdx(null); }}
+                        onClick={() => {
+                          if (isBarcode) {
+                            setZoomImage(img.dataUrl);
+                          } else if (isSelected) {
+                            setSelectedImages(selectedImages.filter(x => x !== i));
+                          } else {
+                            setSelectedImages([...selectedImages, i]);
+                          }
+                        }}
+                        onDoubleClick={() => !isBarcode && setZoomImage(img.dataUrl)}
+                        className={`relative cursor-pointer ${isSelected ? 'ring-4 ring-blue-500' : ''} ${isBarcode ? 'ring-2 ring-red-400' : ''}`}>
+                        <img src={img.dataUrl} className={`w-24 h-24 object-cover rounded border-2 ${isBarcode ? 'border-red-400' : 'border-gray-200'}`}/>
+                        <span className={`absolute top-1 left-1 text-xs px-1 rounded ${isBarcode ? 'bg-red-500 text-white' : 'bg-black/50 text-white'}`}>{isBarcode ? '🔍BC' : displayNum}</span>
+                        {isSelected && <span className="absolute top-1 right-1 bg-blue-500 text-white text-xs px-1 rounded">✓</span>}
+                        <button onClick={(e) => { e.stopPropagation(); toggleExclude(i); }} className="absolute bottom-1 right-1 bg-white rounded-full p-0.5 opacity-70 hover:opacity-100">
+                          <Icon name="eyeOff" className="w-3 h-3"/>
+                        </button>
+                      </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* 除外画像 */}
+                {excludedImages.length > 0 && (
+                <div className="mb-4">
+                  <h4 className="font-bold text-sm mb-2 text-gray-400">🚫 除外済み（{excludedImages.length}枚）- クリックで復元</h4>
+                  <div className="flex flex-wrap gap-2">
+                    {cur.images.map((img, i) => {
+                      if (!img.excluded) return null;
+                      return (
+                      <div key={img.id} className="relative opacity-50 cursor-pointer hover:opacity-80" onClick={() => toggleExclude(i)}>
+                        <img src={img.dataUrl} className="w-20 h-20 object-cover rounded border-2 border-gray-300 grayscale"/>
+                        <button onClick={(e) => { e.stopPropagation(); toggleExclude(i); }} className="absolute top-1 right-1 bg-white rounded-full p-0.5">
+                          <Icon name="eye" className="w-3 h-3"/>
+                        </button>
+                      </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                )}
+              </div>
+
+              {/* 右パネル */}
+              <div className="w-56 border-l p-4 bg-gray-50">
+                <label className="block text-sm font-medium mb-1">バーコード</label>
+                <div className="flex gap-1 mb-3">
+                  <input type="text" value={cur.barcode || ''} onChange={e => { const np = [...products]; np[currentIdx].barcode = e.target.value; setProducts(np); }} className="flex-1 border rounded px-2 py-1 text-sm"/>
+                  <button onClick={() => doOcr(currentIdx)} disabled={loading} className="px-2 py-1 bg-blue-500 text-white rounded text-sm"><Icon name="scan" className="w-4 h-4"/></button>
+                </div>
+                <label className="block text-sm font-medium mb-1">充放電回数</label>
+                <input type="text" value={cur.cycle_count || ''} onChange={e => { const np = [...products]; np[currentIdx].cycle_count = e.target.value; setProducts(np); }} className="w-full border rounded px-2 py-1 text-sm mb-3"/>
+                <label className="block text-sm font-medium mb-1">バッテリー(%)</label>
+                <input type="text" value={cur.battery_health || ''} onChange={e => { const np = [...products]; np[currentIdx].battery_health = e.target.value; setProducts(np); }} className="w-full border rounded px-2 py-1 text-sm mb-4"/>
+                
+                <hr className="my-3"/>
+                <p className="text-xs text-gray-500 mb-2">クイック結合</p>
+                <button onClick={async () => {
+                  const active = cur.images.filter(img => !img.excluded);
+                  if (active.length < 3) return alert('結合には3枚以上必要（バーコード除く）');
+                  saveHistory();
+                  const toMerge = active.slice(0, 2);
+                  const { dataUrl, filename } = await mergeImages(toMerge, 2);
+                  const np = [...products];
+                  const newImg = { id: `merged_${Date.now()}`, filename, dataUrl, excluded: false };
+                  const mergedIds = toMerge.map(img => img.id);
+                  // 元の位置（最初のactive画像の位置）に挿入
+                  const firstIdx = cur.images.findIndex(img => img.id === toMerge[0].id);
+                  const newImages = cur.images.map(img => mergedIds.includes(img.id) ? {...img, excluded: true} : img);
+                  newImages.splice(firstIdx, 0, newImg);
+                  np[currentIdx].images = newImages;
+                  setProducts(np);
+                }} className="w-full mb-2 px-2 py-1 bg-orange-500 text-white rounded text-sm">先頭2枚→1枚</button>
+                <button onClick={async () => {
+                  const active = cur.images.filter(img => !img.excluded);
+                  if (active.length < 5) return alert('結合には5枚以上必要（バーコード除く）');
+                  saveHistory();
+                  const toMerge = active.slice(0, 4);
+                  const { dataUrl, filename } = await mergeImages(toMerge, 2);
+                  const np = [...products];
+                  const newImg = { id: `merged_${Date.now()}`, filename, dataUrl, excluded: false };
+                  const mergedIds = toMerge.map(img => img.id);
+                  // 元の位置（最初のactive画像の位置）に挿入
+                  const firstIdx = cur.images.findIndex(img => img.id === toMerge[0].id);
+                  const newImages = cur.images.map(img => mergedIds.includes(img.id) ? {...img, excluded: true} : img);
+                  newImages.splice(firstIdx, 0, newImg);
+                  np[currentIdx].images = newImages;
+                  setProducts(np);
+                }} className="w-full mb-2 px-2 py-1 bg-orange-500 text-white rounded text-sm">先頭4枚→1枚</button>
+                
+                {imageHistory.length > 0 && (
+                  <button onClick={undoMerge} className="w-full px-2 py-1 bg-yellow-500 text-white rounded text-sm">↩ 戻す ({imageHistory.length})</button>
+                )}
+              </div>
+            </div>
+
+            <div className="border-t p-4 flex justify-between">
+              <button onClick={() => setStep(1)} className="px-4 py-2 border rounded hover:bg-gray-50">戻る</button>
+              <button onClick={processProducts} className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600">次へ</button>
+            </div>
+          </div>
+          );
+        })()}
+
+        {/* Step 3: 価格確認 */}
+        {step === 3 && (
+          <div className="bg-white rounded shadow p-4">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-bold">価格確認</h2>
+              {refPriceData.length > 0 && (
+                <span className="text-sm text-orange-600">📊 価格参照: {refPriceData.length}件</span>
+              )}
+            </div>
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-3 py-2 text-left">フォルダ</th>
+                  <th className="px-3 py-2 text-left">BC（クリックで編集）</th>
+                  <th className="px-3 py-2 text-left">商品</th>
+                  <th className="px-3 py-2 text-right">価格</th>
+                  <th className="px-3 py-2">状態</th>
+                </tr>
+              </thead>
+              <tbody>
+                {products.map((p, i) => {
+                  const activeImgs = p.images.filter(img => !img.excluded);
+                  const bcImg = activeImgs.length > 0 ? activeImgs[activeImgs.length - 1] : null;
+                  const hasPrice = p.price && p.price > 0;
+                  const rowBg = p.status !== 'ok' ? 'bg-red-50' : (!hasPrice ? 'bg-yellow-50' : (i % 2 ? 'bg-gray-50' : ''));
+                  return (
+                  <tr key={p.id} className={rowBg}>
+                    <td className="px-3 py-2">{p.folder}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        {bcImg && (
+                          <img 
+                            src={bcImg.dataUrl} 
+                            className="w-12 h-12 object-cover rounded cursor-pointer hover:opacity-80 border"
+                            onClick={() => { setCurrentIdx(i); setZoomImage(bcImg.dataUrl); }}
+                            title="クリックで拡大・編集"
+                          />
+                        )}
+                        <span className={`font-mono ${p.barcode ? '' : 'text-gray-400'}`}>{p.barcode || '未入力'}</span>
+                      </div>
+                    </td>
+                    <td className="px-3 py-2">{p.specs?.maker} {p.specs?.product_name}</td>
+                    <td className="px-3 py-2 text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <input type="number" value={p.price || ''} onChange={e => { const np = [...products]; np[i].price = parseInt(e.target.value) || null; setProducts(np); }} placeholder="999999" className={`w-24 border rounded px-2 py-1 text-right ${!hasPrice ? 'border-yellow-400 bg-yellow-50' : ''}`}/>
+                        {refPriceData.length > 0 && p.status === 'ok' && (
+                          <button 
+                            onClick={() => setPriceSearchModal({ productIdx: i, results: searchSimilarProducts(p) })}
+                            className="p-1 text-orange-500 hover:text-orange-700 hover:bg-orange-50 rounded"
+                            title="類似商品から価格を検索"
+                          >
+                            🔍
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2 text-center">
+                      {p.status !== 'ok' ? (
+                        <Icon name="x" className="w-5 h-5 text-red-400 mx-auto" title="データなし"/>
+                      ) : hasPrice ? (
+                        <Icon name="check" className="w-5 h-5 text-green-500 mx-auto" title="OK"/>
+                      ) : (
+                        <span className="text-yellow-500 font-bold" title="価格なし（999999で出力）">⚠</span>
+                      )}
+                    </td>
+                  </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <div className="flex justify-between mt-4">
+              <button onClick={() => setStep(2)} className="px-4 py-2 border rounded">戻る</button>
+              <div className="flex gap-2">
+                <button onClick={processProducts} className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">再照合</button>
+                <button onClick={goToPreview} disabled={loading} className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600 disabled:opacity-50">
+                  {loading ? '処理中...' : 'プレビュー →'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Step 4: プレビュー編集 */}
+        {step === 4 && (() => {
+          const okProducts = products.filter(p => p.barcode);
+          const cur = okProducts[currentIdx] || null;
+          const curProductIdx = cur ? products.findIndex(p => p.id === cur.id) : -1;
+          const activeImgs = cur ? cur.images.filter((img, i) => i < cur.images.length - 1 && !img.excluded) : [];
+          
+          // 画像入れ替え関数
+          const swapImages = (fromIdx, toIdx) => {
+            if (curProductIdx < 0) return;
+            const np = [...products];
+            const imgs = [...np[curProductIdx].images];
+            // activeImgsのインデックスを実際のインデックスに変換
+            const activeToReal = [];
+            let ai = 0;
+            imgs.forEach((img, i) => {
+              if (i < imgs.length - 1 && !img.excluded) {
+                activeToReal[ai] = i;
+                ai++;
+              }
+            });
+            const realFrom = activeToReal[fromIdx];
+            const realTo = activeToReal[toIdx];
+            if (realFrom !== undefined && realTo !== undefined) {
+              [imgs[realFrom], imgs[realTo]] = [imgs[realTo], imgs[realFrom]];
+              np[curProductIdx].images = imgs;
+              setProducts(np);
+            }
+          };
+          
+          return (
+          <div className="bg-white rounded shadow">
+            <div className="p-4 border-b flex items-center justify-between">
+              <h2 className="text-lg font-bold">プレビュー編集</h2>
+              <div className="flex items-center gap-4">
+                <span className="text-sm text-gray-600">{okProducts.length}商品</span>
+                <button onClick={() => setStep(3)} className="px-3 py-1 border rounded text-sm">戻る</button>
+                <button onClick={generateCsv} disabled={loading} className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 disabled:opacity-50">
+                  {loading ? '処理中...' : 'CSV生成'}
+                </button>
+              </div>
+            </div>
+            
+            <div className="flex" style={{height: 'calc(100vh - 220px)'}}>
+              {/* 商品リスト */}
+              <div className="w-48 border-r bg-gray-50 overflow-y-auto">
+                {okProducts.map((p, i) => (
+                  <button 
+                    key={p.id} 
+                    onClick={() => setCurrentIdx(i)} 
+                    className={`w-full text-left px-3 py-2 text-sm border-b ${i === currentIdx ? 'bg-blue-500 text-white' : 'hover:bg-gray-100'}`}
+                  >
+                    <div className="font-medium truncate">{p.specs?.maker || 'Unknown'}</div>
+                    <div className="text-xs opacity-75 truncate">{p.barcode}</div>
+                  </button>
+                ))}
+              </div>
+              
+              {/* 編集エリア */}
+              {cur && (
+                <div className="flex-1 overflow-y-auto p-4">
+                  {/* 画像プレビュー（入れ替え・拡大可能） */}
+                  <div className="mb-4">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-sm font-medium">📷 出品画像</span>
+                      <span className="text-xs text-gray-500">ドラッグで入れ替え / クリックで拡大</span>
+                    </div>
+                    <div className="flex gap-2 overflow-x-auto pb-2">
+                      {activeImgs.slice(0, 10).map((img, i) => (
+                        <div 
+                          key={i}
+                          draggable
+                          onDragStart={e => e.dataTransfer.setData('text/plain', i.toString())}
+                          onDragOver={e => e.preventDefault()}
+                          onDrop={e => {
+                            e.preventDefault();
+                            const fromIdx = parseInt(e.dataTransfer.getData('text/plain'));
+                            if (fromIdx !== i) swapImages(fromIdx, i);
+                          }}
+                          className="relative flex-shrink-0 cursor-move"
+                        >
+                          <img 
+                            src={img.dataUrl} 
+                            className="w-20 h-20 object-cover rounded border hover:border-blue-400"
+                            onClick={() => setZoomImage(img.dataUrl)}
+                          />
+                          <span className="absolute bottom-0 left-0 bg-black/60 text-white text-xs px-1 rounded-tr">{i+1}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  
+                  {/* タイトル */}
+                  <div className="mb-4">
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="font-medium text-sm">タイトル</label>
+                      <span className={`text-xs ${(cur.title || '').length > 65 ? 'text-red-500' : 'text-gray-500'}`}>
+                        {(cur.title || '').length}/65
+                      </span>
+                    </div>
+                    <input 
+                      type="text" 
+                      value={cur.title || ''} 
+                      onChange={e => { 
+                        const np = [...products]; 
+                        const idx = np.findIndex(p => p.id === cur.id);
+                        if (idx >= 0) np[idx].title = e.target.value;
+                        setProducts(np); 
+                      }} 
+                      className={`w-full border rounded px-3 py-2 ${(cur.title || '').length > 65 ? 'border-red-400' : ''}`}
+                    />
+                  </div>
+                  
+                  {/* 価格 */}
+                  <div className="mb-4">
+                    <label className="font-medium text-sm block mb-1">価格</label>
+                    <input 
+                      type="number" 
+                      value={cur.price || ''} 
+                      onChange={e => { 
+                        const np = [...products]; 
+                        const idx = np.findIndex(p => p.id === cur.id);
+                        if (idx >= 0) np[idx].price = parseInt(e.target.value) || null;
+                        setProducts(np); 
+                      }} 
+                      placeholder="999999"
+                      className="w-32 border rounded px-3 py-2"
+                    />
+                    {!cur.price && <span className="ml-2 text-yellow-600 text-sm">⚠ 価格未設定（999999で出力）</span>}
+                  </div>
+                  
+                  {/* 商品説明 */}
+                  <div>
+                    <label className="font-medium text-sm block mb-1">商品説明</label>
+                    <textarea 
+                      value={cur.description || ''} 
+                      onChange={e => { 
+                        const np = [...products]; 
+                        const idx = np.findIndex(p => p.id === cur.id);
+                        if (idx >= 0) np[idx].description = e.target.value;
+                        setProducts(np); 
+                      }} 
+                      rows={20}
+                      className="w-full border rounded px-3 py-2 text-sm font-mono"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+          );
+        })()}
+
+        {/* Step 5: 完了 */}
+        {step === 5 && (
+          <div className="bg-white rounded shadow p-8 text-center">
+            <Icon name="check" className="w-16 h-16 text-green-500 mx-auto mb-4"/>
+            <h2 className="text-xl font-bold mb-2">完了！</h2>
+            <p className="text-gray-600 mb-6">{message}</p>
+            <button onClick={() => { setStep(1); setProducts([]); }} className="text-blue-500 hover:underline">新規作成</button>
+          </div>
+        )}
+      </div>
+
+      {loading && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
+          <div className="bg-white rounded p-6 flex items-center gap-3">
+            <Icon name="refresh" className="w-6 h-6 animate-spin text-blue-500"/>処理中...
+          </div>
+        </div>
+      )}
+
+      {/* 価格検索モーダル */}
+      {priceSearchModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setPriceSearchModal(null)}>
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="p-4 border-b bg-orange-50 flex items-center justify-between">
+              <h3 className="font-bold text-lg">🔍 類似商品から価格を検索</h3>
+              <button onClick={() => setPriceSearchModal(null)} className="text-gray-500 hover:text-gray-700 text-2xl">&times;</button>
+            </div>
+            <div className="p-4 border-b bg-gray-50">
+              <div className="text-sm text-gray-600">
+                検索対象: <span className="font-medium text-gray-900">
+                  {products[priceSearchModal.productIdx]?.specs?.maker} {products[priceSearchModal.productIdx]?.specs?.product_name}
+                </span>
+              </div>
+              <div className="text-xs text-gray-500 mt-1">
+                CPU: {products[priceSearchModal.productIdx]?.specs?.cpu} / 
+                メモリ: {products[priceSearchModal.productIdx]?.specs?.memory} / 
+                ストレージ: {products[priceSearchModal.productIdx]?.specs?.storage}
+              </div>
+            </div>
+            <div className="overflow-y-auto" style={{maxHeight: 'calc(80vh - 180px)'}}>
+              {priceSearchModal.results.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">
+                  類似商品が見つかりませんでした
+                </div>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-100 sticky top-0">
+                    <tr>
+                      <th className="px-4 py-2 text-left">商品</th>
+                      <th className="px-4 py-2 text-right">価格</th>
+                      <th className="px-4 py-2 text-center">件数</th>
+                      <th className="px-4 py-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {priceSearchModal.results.map((r, i) => (
+                      <tr key={i} className={`border-b hover:bg-orange-50 ${i === 0 ? 'bg-orange-100' : ''}`}>
+                        <td className="px-4 py-3">
+                          <div className="font-medium">{r.keyword}</div>
+                          <div className="text-xs text-gray-500">スコア: {r.score}</div>
+                        </td>
+                        <td className="px-4 py-3 text-right font-bold text-lg">¥{r.price.toLocaleString()}</td>
+                        <td className="px-4 py-3 text-center text-gray-500">x{r.count}</td>
+                        <td className="px-4 py-3 text-center">
+                          <button 
+                            onClick={() => {
+                              const np = [...products];
+                              np[priceSearchModal.productIdx].price = r.price;
+                              setProducts(np);
+                              setPriceSearchModal(null);
+                            }}
+                            className="px-3 py-1 bg-orange-500 text-white rounded hover:bg-orange-600 text-sm"
+                          >
+                            適用
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            <div className="p-3 border-t bg-gray-50 text-right">
+              <button onClick={() => setPriceSearchModal(null)} className="px-4 py-2 border rounded hover:bg-gray-100">閉じる</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 画像拡大モーダル */}
+      {zoomImage && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4" onClick={() => setZoomImage(null)}>
+          <div className="relative max-w-5xl w-full max-h-[90vh]" onClick={e => e.stopPropagation()}>
+            {/* 閉じるボタン */}
+            <button onClick={() => setZoomImage(null)} className="absolute -top-10 right-0 text-white text-3xl hover:text-gray-300">&times;</button>
+            
+            {/* 画像 */}
+            <img src={zoomImage} className="w-full h-auto rounded-lg" style={{maxHeight: '75vh', objectFit: 'contain'}}/>
+            
+            {/* バーコード入力（下部） */}
+            <div className="mt-4 bg-white rounded-lg p-4 flex items-center gap-4">
+              <label className="font-medium whitespace-nowrap">バーコード番号:</label>
+              <input 
+                type="text" 
+                value={products[currentIdx]?.barcode || ''} 
+                onChange={e => { 
+                  const np = [...products]; 
+                  np[currentIdx].barcode = e.target.value; 
+                  setProducts(np); 
+                }} 
+                placeholder="下6桁を入力（例: 185660）"
+                className="flex-1 border-2 border-blue-400 rounded px-3 py-2 text-lg font-mono focus:border-blue-600 focus:outline-none"
+              />
+              <button 
+                onClick={() => setZoomImage(null)} 
+                className="px-6 py-2 bg-blue-500 text-white rounded font-medium hover:bg-blue-600"
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
