@@ -423,20 +423,12 @@ const makeDescription = (p, customNotice) => {
   return `${p.barcode || ''}\n\n${p.intro || ''}\n\n${spec}\n\n${acc}\n\n${state}${notice ? '\n\n' + notice : ''}`;
 };
 
-// OpenAI API（選択したモデルを使用）
+// OpenAI API（gpt-4.1-mini固定）
 const callOpenAI = async (key, msgs, max = 200) => {
-  const model = localStorage.getItem('openai_model') || 'gpt-4o';
-  // 新しいモデル（4.1系、5系、o1、o3など）はmax_completion_tokens
-  const useNewParam = model.includes('4.1') || model.startsWith('gpt-5') || model.startsWith('o1') || model.startsWith('o3');
-  const body = {
-    model,
-    messages: msgs,
-    ...(useNewParam ? { max_completion_tokens: max } : { max_tokens: max })
-  };
   const r = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
-    body: JSON.stringify(body)
+    body: JSON.stringify({ model: 'gpt-4.1-mini', messages: msgs, max_completion_tokens: max })
   });
   const d = await r.json();
   if (d.error) throw new Error(d.error.message);
@@ -485,9 +477,9 @@ JSON出力（indexは0始まり）:
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
     body: JSON.stringify({
-      model: 'gpt-4o-mini',
+      model: 'gpt-4.1-mini',
       messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...imageContents] }],
-      max_tokens: 500
+      max_completion_tokens: 500
     })
   });
   const d = await r.json();
@@ -892,7 +884,7 @@ function App() {
   const [step, setStep] = useState(1);
   const [apiKey, setApiKey] = useState(localStorage.getItem('openai_key') || '');
   const [outputDirHandle, setOutputDirHandle] = useState(null); // 画像保存先フォルダ
-  const [aiModel, setAiModel] = useState(localStorage.getItem('openai_model') || 'gpt-4o');
+  const [apiKey, setApiKey] = useState(localStorage.getItem('openai_key') || '');
   const [purchaseData, setPurchaseData] = useState([]);
   const [priceData, setPriceData] = useState([]);
 
@@ -991,8 +983,7 @@ function App() {
   // APIキー保存
   const saveApiKey = () => {
     localStorage.setItem('openai_key', apiKey);
-    localStorage.setItem('openai_model', aiModel);
-    setMessage('APIキー・モデル保存完了');
+    setMessage('APIキー保存完了');
   };
 
   // APIテスト
@@ -1001,22 +992,16 @@ function App() {
     setLoading(true);
     setMessage('テスト中...');
     try {
-      const useNewParam = aiModel.includes('4.1') || aiModel.startsWith('gpt-5') || aiModel.startsWith('o1') || aiModel.startsWith('o3');
-      const body = {
-        model: aiModel,
-        messages: [{ role: 'user', content: 'Say OK' }],
-        ...(useNewParam ? { max_completion_tokens: 50 } : { max_tokens: 50 })
-      };
       const r = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-        body: JSON.stringify(body)
+        body: JSON.stringify({ model: 'gpt-4.1-mini', messages: [{ role: 'user', content: 'Say OK' }], max_completion_tokens: 50 })
       });
       const d = await r.json();
       if (d.error) {
-        setMessage(`❌ ${aiModel}: ${d.error.message}`);
+        setMessage(`❌ ${d.error.message}`);
       } else {
-        setMessage(`✅ ${aiModel}: 接続OK！`);
+        setMessage(`✅ gpt-4.1-mini: 接続OK！`);
       }
     } catch (e) {
       setMessage(`❌ エラー: ${e.message}`);
@@ -1206,12 +1191,12 @@ function App() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
             body: JSON.stringify({
-              model: 'gpt-4o-mini',
+              model: 'gpt-4.1-mini',
               messages: [{ role: 'user', content: [
                 { type: 'text', text: `${batch.length}枚の画像があります。各画像がバーコード/ラベルの画像かどうか判定してください。バーコード・シリアルナンバーラベル・管理番号シールの画像なら1、それ以外（PC本体・画面・キーボード等）なら0。\nJSON配列のみ出力: [0,1,0,...]` },
                 ...imageContents
               ] }],
-              max_tokens: 200
+              max_completion_tokens: 200
             })
           });
           const d = await r.json();
@@ -1700,7 +1685,7 @@ function App() {
           <span>仕入: <b>{purchaseData.length}</b></span>
           <span>価格: <b>{priceData.length}</b></span>
           <span>API: {apiKey ? '✓' : '未設定'}</span>
-          <span className="text-purple-600">🤖 {aiModel}</span>
+          <span className="text-purple-600">🤖 gpt-4.1-mini</span>
           {(purchaseData.length > 0 || priceData.length > 0) && (
             <button onClick={clearSavedData} className="text-red-500 hover:text-red-700 text-xs">🗑️ データクリア</button>
           )}
@@ -1738,22 +1723,13 @@ function App() {
                 title="価格Excel"
                 icon="file"
                 color="green"
-                accept=".xlsx,.xls,.csv"
+                accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
                 multiple={true}
                 onFiles={handlePriceFiles}
               />
               <div className="bg-white rounded shadow p-4">
                 <h3 className="font-bold mb-3 flex items-center gap-2"><Icon name="key" className="w-5 h-5 text-purple-500"/>OpenAI API</h3>
                 <input type="password" placeholder="sk-..." value={apiKey} onChange={e => setApiKey(e.target.value)} className="w-full border rounded px-2 py-1 mb-2 text-sm"/>
-                <select value={aiModel} onChange={e => setAiModel(e.target.value)} className="w-full border rounded px-2 py-1 mb-2 text-sm">
-                  <option value="gpt-4o">gpt-4o</option>
-                  <option value="gpt-4o-mini">gpt-4o-mini</option>
-                  <option value="gpt-4.1">gpt-4.1</option>
-                  <option value="gpt-4.1-mini">gpt-4.1-mini</option>
-                  <option value="gpt-5.1">gpt-5.1</option>
-                  <option value="o1">o1</option>
-                  <option value="o3-mini">o3-mini</option>
-                </select>
                 <div className="flex gap-2">
                   <button onClick={saveApiKey} className="flex-1 bg-purple-500 text-white rounded py-1 text-sm hover:bg-purple-600">保存</button>
                   <button onClick={testApi} disabled={loading} className="flex-1 bg-blue-500 text-white rounded py-1 text-sm hover:bg-blue-600 disabled:opacity-50">テスト</button>
@@ -1775,6 +1751,7 @@ function App() {
                 color="blue"
                 accept="image/*"
                 multiple={true}
+                directory={true}
                 onFiles={handleSorterFiles}
                 hint="未整理写真をドロップ"
               />
