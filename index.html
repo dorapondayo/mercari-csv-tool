@@ -1312,28 +1312,56 @@ function App() {
       };
     });
     
-    // APIキーがあればバーコード画像を自動OCR
     if (apiKey) {
-      setMessage('バーコード自動読取中...');
-      for (let i = 0; i < prods.length; i++) {
+      const total = prods.length;
+      const etaSec = total * 6; // OCR ~3s + classify ~3s per product
+      setMessage(`🔄 AI処理開始（${total}商品、予想: 約${Math.ceil(etaSec/60)}分）`);
+      const t0 = Date.now();
+      
+      const fmtEta = (done, total, t0) => {
+        const elapsed = (Date.now() - t0) / 1000;
+        if (done < 2) return '';
+        const perItem = elapsed / done;
+        const remaining = Math.ceil(perItem * (total - done));
+        if (remaining < 60) return `残り約${remaining}秒`;
+        return `残り約${Math.ceil(remaining/60)}分`;
+      };
+      
+      // Phase 1: バーコードOCR
+      let ocrErrors = 0;
+      for (let i = 0; i < total; i++) {
         const p = prods[i];
         const bcImg = p.images[p._bcPhotoIdx];
         if (bcImg) {
           try {
-            setMessage(`バーコード読取中... ${i+1}/${prods.length}`);
+            setMessage(`📷 バーコード読取中... ${i+1}/${total} ${fmtEta(i, total*2, t0)}`);
             const bc = await ocrBarcode(apiKey, bcImg.dataUrl);
             if (bc) p.barcode = bc;
-          } catch (e) { console.error('OCRエラー:', e); }
+          } catch (e) {
+            ocrErrors++;
+            console.error(`OCRエラー(${i+1}):`, e);
+            if (ocrErrors >= 3) {
+              // 連続エラー → 中断して途中保存
+              prods.forEach(p => delete p._bcPhotoIdx);
+              setProducts(prods);
+              setSorterMode(false);
+              setStep(2);
+              setLoading(false);
+              setMessage(`⚠️ APIエラー多発のため中断（${i+1}/${total}完了）。Step2で「🔄 AI再処理」から再開できます`);
+              return;
+            }
+          }
         }
       }
       
-      // 自動並び替え＆結合
-      for (let i = 0; i < prods.length; i++) {
-        setMessage(`画像分類＆並替中... ${i+1}/${prods.length}`);
+      // Phase 2: 画像分類＆並替
+      let classifyErrors = 0;
+      for (let i = 0; i < total; i++) {
         const p = prods[i];
         const activeImgs = p.images.filter(img => !img.excluded);
         if (activeImgs.length < 2) continue;
         try {
+          setMessage(`🤖 画像分類＆並替中... ${i+1}/${total} ${fmtEta(total + i, total*2, t0)}`);
           const classifications = await classifyImages(apiKey, activeImgs);
           if (!classifications) continue;
           
@@ -1344,7 +1372,6 @@ function App() {
             else if (img) byCategory.other.push(img);
           });
           
-          // 並び順: main(2) → screen(2) → keyboard(1) → side(結合) → battery(1) → spec(結合) → other → barcode
           const sorted = [];
           const toMerge = [];
           
@@ -1382,18 +1409,122 @@ function App() {
           const mergedIds = new Set(toMerge.flatMap(t => t.imgs.map(im => im.id)));
           const excludedImgs = p.images.filter(img => img.excluded || mergedIds.has(img.id)).map(img => ({ ...img, excluded: true }));
           p.images = [...sorted, ...excludedImgs];
-        } catch (e) { console.error('autoSortエラー:', e); }
+          p._sorted = true;
+        } catch (e) {
+          classifyErrors++;
+          console.error(`分類エラー(${i+1}):`, e);
+          if (classifyErrors >= 3) {
+            prods.forEach(p => delete p._bcPhotoIdx);
+            prods.forEach(p => delete p._sorted);
+            setProducts(prods);
+            setSorterMode(false);
+            setStep(2);
+            setLoading(false);
+            setMessage(`⚠️ APIエラー多発のため中断（分類${i+1}/${total}完了）。Step2で「🔄 AI再処理」から再開できます`);
+            return;
+          }
+        }
       }
+      
+      const elapsed = Math.round((Date.now() - t0) / 1000);
+      var doneMsg = `✅ ${total}商品、${prods.filter(p=>p.barcode).length}件BC読取、画像整理完了（${elapsed}秒）`;
     }
     
-    prods.forEach(p => delete p._bcPhotoIdx);
+    prods.forEach(p => { delete p._bcPhotoIdx; delete p._sorted; });
     
     setProducts(prods);
     setSorterMode(false);
-    const ocrCount = prods.filter(p => p.barcode).length;
-    setMessage(`✅ ${prods.length}商品に振り分け、${ocrCount}件BC読取、画像自動整理完了`);
+    setMessage(doneMsg || `✅ ${prods.length}商品に振り分け完了`);
     setStep(2);
     setLoading(false);
+  };
+
+  // AI再処理（エラー中断後の再開用 / 未処理商品のみ）
+  const aiReprocess = async () => {
+    if (!apiKey) return setMessage('❌ APIキー未設定');
+    setLoading(true);
+    const total = products.length;
+    const t0 = Date.now();
+    
+    const fmtEta = (done, total, t0) => {
+      const elapsed = (Date.now() - t0) / 1000;
+      if (done < 2) return '';
+      const perItem = elapsed / done;
+      const remaining = Math.ceil(perItem * (total - done));
+      return remaining < 60 ? `残り約${remaining}秒` : `残り約${Math.ceil(remaining/60)}分`;
+    };
+    
+    const np = [...products];
+    let processed = 0;
+    
+    for (let i = 0; i < np.length; i++) {
+      const p = np[i];
+      
+      // OCR未完了
+      if (!p.barcode) {
+        const allActive = p.images.filter(img => !img.excluded);
+        const bcImg = allActive.find(img => img.isBarcode) || allActive[allActive.length - 1];
+        if (bcImg) {
+          try {
+            setMessage(`📷 BC再読取... ${i+1}/${total} ${fmtEta(processed, total, t0)}`);
+            const bc = await ocrBarcode(apiKey, bcImg.dataUrl);
+            if (bc) p.barcode = bc;
+          } catch (e) { console.error('OCRエラー:', e); }
+        }
+      }
+      
+      // 分類未完了（結合画像がないor_sorted未付与→画像数が多い場合）
+      const activeImgs = p.images.filter(img => !img.excluded);
+      const hasMerged = p.images.some(img => img.id?.startsWith('merged_'));
+      if (!hasMerged && activeImgs.length > 4) {
+        try {
+          setMessage(`🤖 分類＆並替... ${i+1}/${total} ${fmtEta(processed, total, t0)}`);
+          const classifications = await classifyImages(apiKey, activeImgs);
+          if (classifications) {
+            const byCategory = { main: [], screen: [], keyboard: [], side: [], battery: [], spec: [], barcode: [], other: [] };
+            classifications.forEach(c => {
+              const img = activeImgs[c.index];
+              if (img && byCategory[c.category]) byCategory[c.category].push(img);
+              else if (img) byCategory.other.push(img);
+            });
+            
+            const sorted = [];
+            const toMerge = [];
+            sorted.push(...byCategory.main.slice(0, 2));
+            if (byCategory.main.length > 2) byCategory.other.push(...byCategory.main.slice(2));
+            if (byCategory.screen.length <= 2) { sorted.push(...byCategory.screen); }
+            else { sorted.push(...byCategory.screen.slice(0, 1)); toMerge.push({ name: 'screen', imgs: byCategory.screen.slice(1) }); }
+            sorted.push(...byCategory.keyboard.slice(0, 1));
+            if (byCategory.keyboard.length > 1) byCategory.other.push(...byCategory.keyboard.slice(1));
+            if (byCategory.side.length >= 2) {
+              toMerge.push({ name: 'side', imgs: byCategory.side.slice(0, 4) });
+              if (byCategory.side.length > 4) byCategory.other.push(...byCategory.side.slice(4));
+            } else { sorted.push(...byCategory.side); }
+            sorted.push(...byCategory.battery.slice(0, 1));
+            if (byCategory.battery.length > 1) byCategory.other.push(...byCategory.battery.slice(1));
+            if (byCategory.spec.length >= 2) { toMerge.push({ name: 'spec', imgs: byCategory.spec }); }
+            else { sorted.push(...byCategory.spec); }
+            sorted.push(...byCategory.other);
+            for (const item of toMerge) {
+              if (item.imgs.length >= 2) {
+                const { dataUrl, filename } = await mergeImages(item.imgs, 2);
+                sorted.push({ id: `merged_${Date.now()}_${item.name}`, filename, dataUrl, excluded: false });
+              }
+            }
+            sorted.push(...byCategory.barcode);
+            const mergedIds = new Set(toMerge.flatMap(t => t.imgs.map(im => im.id)));
+            const excludedImgs = p.images.filter(img => img.excluded || mergedIds.has(img.id)).map(img => ({ ...img, excluded: true }));
+            p.images = [...sorted, ...excludedImgs];
+          }
+        } catch (e) { console.error('分類エラー:', e); }
+      }
+      processed++;
+    }
+    
+    setProducts(np);
+    setLoading(false);
+    const elapsed = Math.round((Date.now() - t0) / 1000);
+    setMessage(`✅ AI再処理完了（${elapsed}秒）`);
   };
 
   // OCR
@@ -1824,6 +1955,9 @@ function App() {
                 </span>
                 <button onClick={doOcrAll} disabled={loading} className="px-3 py-1 bg-purple-500 text-white rounded text-sm hover:bg-purple-600 disabled:opacity-50">
                   {loading ? '処理中...' : '全OCR'}
+                </button>
+                <button onClick={aiReprocess} disabled={loading} className="px-3 py-1 bg-indigo-500 text-white rounded text-sm hover:bg-indigo-600 disabled:opacity-50">
+                  🔄 AI再処理
                 </button>
               </div>
             </div>
