@@ -1486,11 +1486,12 @@ function App() {
       }
       const rank = String(row['評価点'] || '').trim().toUpperCase();
       const acc = parseAccessories(row['付属品情報'] || '');
+      const accessories = acc.length > 0 ? acc : ['あり'];
       const defect = [row['瑕疵情報1'], row['瑕疵情報2']].filter(x => x && !x.includes('中古品の為')).join('、');
       return {
         ...p, barcode, status: 'ok', specs, product_type: type, price, purchaseCost, rank,
         condition: CONDITION_MAP[rank] || 'やや傷や汚れあり',
-        accessories: acc, defect_info: defect,
+        accessories: accessories, defect_info: defect,
         is_english_kb: (row['付属品情報'] || '').includes('英字KB'),
         hasOffice: p.hasOffice || false,  // OFFICE搭載フラグを保持
         isJunk: p.isJunk || false  // ジャンク品フラグを保持
@@ -2163,6 +2164,70 @@ function App() {
                       className="w-32 border rounded px-3 py-2"
                     />
                     {!cur.price && <span className="ml-2 text-yellow-600 text-sm">⚠ 価格未設定（999999で出力）</span>}
+                  </div>
+                  
+                  {/* 付属品 */}
+                  <div className="mb-4">
+                    <label className="font-medium text-sm block mb-1">付属品</label>
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {['ACアダプター', 'ACコード', 'MagSafeケーブル', 'キーボード', 'あり', 'なし'].map(item => {
+                        const has = (cur.accessories || []).includes(item);
+                        return (
+                          <button key={item} onClick={() => {
+                            const np = [...products];
+                            const idx = np.findIndex(p => p.id === cur.id);
+                            if (idx < 0) return;
+                            let accs = [...(np[idx].accessories || [])];
+                            if (has) { accs = accs.filter(a => a !== item); }
+                            else { if (item === 'あり' || item === 'なし') accs = [item]; else { accs = accs.filter(a => a !== 'あり' && a !== 'なし'); accs.push(item); } }
+                            if (accs.length === 0) accs = ['あり'];
+                            np[idx].accessories = accs;
+                            // 説明文の付属品セクションも更新
+                            if (np[idx].description) {
+                              np[idx].description = np[idx].description.replace(/【付属品】\n[^\n]*/, `【付属品】\n${accs.join('、')}`);
+                            }
+                            setProducts(np);
+                          }}
+                          className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${has ? 'bg-blue-500 text-white border-blue-500' : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400'}`}
+                          >{has ? '✓ ' : ''}{item}</button>
+                        );
+                      })}
+                      {/* カスタム付属品（既存のうち定型外） */}
+                      {(cur.accessories || []).filter(a => !['ACアダプター', 'ACコード', 'MagSafeケーブル', 'キーボード', 'あり', 'なし'].includes(a)).map(item => (
+                        <span key={item} className="px-2.5 py-1 rounded-full text-xs bg-green-100 text-green-800 border border-green-300 flex items-center gap-1">
+                          {item}
+                          <button onClick={() => {
+                            const np = [...products];
+                            const idx = np.findIndex(p => p.id === cur.id);
+                            if (idx < 0) return;
+                            let accs = np[idx].accessories.filter(a => a !== item);
+                            if (accs.length === 0) accs = ['あり'];
+                            np[idx].accessories = accs;
+                            if (np[idx].description) np[idx].description = np[idx].description.replace(/【付属品】\n[^\n]*/, `【付属品】\n${accs.join('、')}`);
+                            setProducts(np);
+                          }} className="text-green-600 hover:text-red-500">×</button>
+                        </span>
+                      ))}
+                      {/* 追加入力 */}
+                      <input
+                        type="text" placeholder="+ 追加" 
+                        className="px-2 py-1 border rounded text-xs w-20"
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' && e.target.value.trim()) {
+                            const np = [...products];
+                            const idx = np.findIndex(p => p.id === cur.id);
+                            if (idx < 0) return;
+                            let accs = [...(np[idx].accessories || [])].filter(a => a !== 'あり' && a !== 'なし');
+                            const v = e.target.value.trim();
+                            if (!accs.includes(v)) accs.push(v);
+                            np[idx].accessories = accs;
+                            if (np[idx].description) np[idx].description = np[idx].description.replace(/【付属品】\n[^\n]*/, `【付属品】\n${accs.join('、')}`);
+                            setProducts(np);
+                            e.target.value = '';
+                          }
+                        }}
+                      />
+                    </div>
                   </div>
                   
                   {/* 商品説明 */}
