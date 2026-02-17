@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>メルカリCSV生成ツール</title>
+  <title>メルカリCSV生成ツール v4</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -13,6 +13,37 @@
   <script src="https://cdn.jsdelivr.net/npm/encoding-japanese@2.0.0/encoding.min.js"></script>
   <style>
     .drag-over { border-color: #3b82f6 !important; background: #eff6ff !important; }
+    /* 写真振り分けモード */
+    .sorter-overlay { position:fixed; inset:0; background:#1a1a2e; z-index:300; display:flex; flex-direction:column; }
+    .sorter-header { background:#16213e; padding:10px 20px; display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid #0f3460; }
+    .sorter-header h2 { color:#e94560; font-size:18px; font-weight:bold; }
+    .sorter-stats { display:flex; gap:16px; font-size:14px; color:#eee; }
+    .sorter-stat { background:#0f3460; padding:4px 12px; border-radius:16px; }
+    .sorter-stat b { color:#e94560; }
+    .sorter-toolbar { background:#16213e; padding:8px 16px; display:flex; gap:8px; align-items:center; border-bottom:1px solid #0f3460; flex-wrap:wrap; }
+    .sorter-toolbar .sbtn { padding:6px 16px; border:none; border-radius:6px; cursor:pointer; font-size:13px; font-weight:600; transition:all 0.2s; }
+    .sbtn-split { background:#e94560; color:#fff; } .sbtn-split:hover { background:#ff6b81; }
+    .sbtn-undo { background:#444; color:#ddd; } .sbtn-undo:hover { background:#555; }
+    .sbtn-done { background:#28a745; color:#fff; font-size:15px; padding:8px 24px; } .sbtn-done:hover { background:#34d058; }
+    .sbtn-done:disabled { background:#555; cursor:not-allowed; }
+    .sbtn-cancel { background:#666; color:#fff; } .sbtn-cancel:hover { background:#777; }
+    .sorter-grid { flex:1; overflow-y:auto; padding:10px; display:flex; flex-wrap:wrap; gap:6px; align-content:flex-start; }
+    .sorter-item { width:120px; height:120px; position:relative; cursor:pointer; border-radius:6px; overflow:hidden; border:3px solid transparent; background:#222; user-select:none; transition:border-color 0.15s; }
+    .sorter-item img { width:100%; height:100%; object-fit:cover; pointer-events:none; }
+    .sorter-item.s-selected { border-color:#00bfff; }
+    .sorter-item.s-split { border-color:#e94560; }
+    .sorter-item.s-split::after { content:"✂"; position:absolute; top:2px; right:4px; background:#e94560; color:#fff; font-size:12px; padding:2px 6px; border-radius:4px; pointer-events:none; }
+    .sorter-item .s-label { position:absolute; bottom:0; left:0; right:0; background:rgba(0,0,0,0.7); font-size:9px; text-align:center; padding:2px; color:#ccc; pointer-events:none; }
+    .sorter-divider { width:100%; padding:4px 10px; background:#e94560; color:#fff; font-weight:bold; font-size:13px; border-radius:4px; margin:4px 0; display:flex; justify-content:space-between; }
+    .sorter-sidebar { width:180px; background:#16213e; overflow-y:auto; border-right:1px solid #0f3460; flex-shrink:0; }
+    .sorter-pc-item { padding:8px 12px; cursor:pointer; border-bottom:1px solid #0f3460; display:flex; justify-content:space-between; color:#eee; font-size:13px; transition:background 0.2s; }
+    .sorter-pc-item:hover { background:#1a1a40; }
+    .sorter-pc-item.s-active { background:#0f3460; border-left:3px solid #e94560; }
+    .sorter-preview { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.9); z-index:400; justify-content:center; align-items:center; cursor:pointer; }
+    .sorter-preview.active { display:flex; }
+    .sorter-preview img { max-width:90%; max-height:90%; object-fit:contain; }
+    .sorter-keys { font-size:12px; color:#888; margin-left:auto; }
+    .sorter-keys kbd { background:#333; padding:2px 6px; border-radius:4px; border:1px solid #555; font-family:monospace; color:#ddd; }
   </style>
 </head>
 <body>
@@ -52,23 +83,28 @@ const ACCESSORY_MAP = {
 };
 const ACCESSORY_EXCLUDE = ['ﾊﾞｯﾃﾘﾊﾟｯｸ', 'Webｶﾒﾗ有', '英字KB', 'TV機能'];
 
-const NOTICE_TEXT = `※ 実際の商品画像です。
+const DEFAULT_NOTICE_TEXT = `※ 実際の商品画像です。
 ※ スペックや状態の詳細は画像からご確認ください。
 ※ 中古品のため、使用に差し支えない傷や汚れがある場合があります。必ず写真をご確認ください。
 
 ■ 初期不良について
-商品到着後7日以内にご連絡いただいた初期不良（電源が入らない、画面が映らない等）については、当店にて動作確認の上、無償で交換または修理対応を行います。
-・対象期間：商品到着後7日以内
-・返送送料：全て当店負担
+出荷日から7日以内にご連絡いただいた初期不良（電源が入らない、画面が映らないなど）については、当店にて動作確認の上、無償で交換または修理対応を行います。
+・対象期間：出荷日から7日間
+・送料：往復すべて当店負担
 
 ■ 保証対象外
 以下の場合は保証・返品の対象外です。
 ・お客様の過失による故障・破損（水濡れ・落下・衝撃・誤接続など）
-・改造・分解・OS再インストールによるトラブル
-・対応しないゲームやソフトウェアとの相性
+・分解・改造によるトラブル
+・お客様ご自身によるOS再インストール後のトラブル
+・ソフトウェアの不具合、対応しないゲーム等との相性問題
 ・動作に影響しない軽微な外観上の傷や汚れ
-傷や使用感など見た目による返品はお受けできません。
-改造・物理破損・不適切な使用による不具合は保証対象外です。
+・バッテリーの劣化・消耗
+※「分解・改造」について：当店からの指示なく内部パーツへの作業を行った場合は保証対象外となります。不具合が発生した場合は、まず当店へご連絡ください。
+
+■ 不具合のご連絡について
+不具合の具体的な症状・発生状況・写真または動画をご提供ください。
+情報をご提供いただけない場合は、対応をお断りすることがあります。
 
 ※該当が疑われる場合は、状況写真を添えて事前にご連絡のうえ、着払いでご返送ください。`;
 
@@ -349,7 +385,7 @@ const JUNK_STATE_TEXT = `本商品はジャンク品のため、動作・状態�
 起動不可・画面不良・異音・端子不良・バッテリー劣化・外装破損など、いかなる不具合でも返品・返金・交換不可となります。
 修理・部品取り前提でご購入ください。`;
 
-const makeDescription = (p) => {
+const makeDescription = (p, customNotice) => {
   const s = p.specs || {};
   const t = p.product_type;
   // 型番から「他 X台セット」を削除
@@ -363,6 +399,7 @@ const makeDescription = (p) => {
     lines.push(`メモリ：${s.memory || '-'}`, `ストレージ：${s.storage || '-'}`, `ディスプレイ：${s.size || '-'}`);
     if (p.cycle_count) lines.push(`充放電回数：${p.cycle_count}回`);
     if (p.battery_health) lines.push(`バッテリー最大容量：${p.battery_health}%`);
+    lines.push(`初期設定パスワード：0000`);
   } else {
     lines.push(`メーカー：${s.maker || '-'}`, `型番：${modelClean}`, `CPU：${s.cpu || '-'}`);
     if (s.gpu) lines.push(`GPU：${s.gpu}`);
@@ -376,7 +413,7 @@ const makeDescription = (p) => {
   const stateContent = p.isJunk ? JUNK_STATE_TEXT : (p.defect_info || '');
   const state = `【状態】\n${stateContent}`;
   // ジャンク品の場合はNOTICE_TEXTを省略
-  const notice = p.isJunk ? '' : NOTICE_TEXT;
+  const notice = p.isJunk ? '' : (customNotice || DEFAULT_NOTICE_TEXT);
   return `${p.barcode || ''}\n\n${p.intro || ''}\n\n${spec}\n\n${acc}\n\n${state}${notice ? '\n\n' + notice : ''}`;
 };
 
@@ -829,7 +866,7 @@ function App() {
   const [aiModel, setAiModel] = useState(localStorage.getItem('openai_model') || 'gpt-4o');
   const [purchaseData, setPurchaseData] = useState([]);
   const [priceData, setPriceData] = useState([]);
-  const [refPriceData, setRefPriceData] = useState([]);  // 価格参照データ（類似商品検索用）
+
   const [products, setProducts] = useState([]);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -838,7 +875,32 @@ function App() {
   const [selectedImages, setSelectedImages] = useState([]);
   const [imageHistory, setImageHistory] = useState([]); // 履歴（Undo用）
   const [zoomImage, setZoomImage] = useState(null); // 拡大表示用
-  const [priceSearchModal, setPriceSearchModal] = useState(null);  // 価格検索モーダル用
+  // 保証文テンプレート（編集可能）
+  const [noticeText, setNoticeText] = useState(() => localStorage.getItem('mercari_notice_text') || DEFAULT_NOTICE_TEXT);
+  const [showNoticeEditor, setShowNoticeEditor] = useState(false);
+
+  // 検索URL構築
+  const buildSearchQuery = (p) => {
+    const s = p.specs || {};
+    const parts = [s.maker, s.cpu, s.memory, s.storage].filter(Boolean);
+    if (s.model) parts.unshift(s.model);
+    return parts.join(' ').trim();
+  };
+  const buildYahooUrl = (query) => {
+    const q = encodeURIComponent(query);
+    return `https://auctions.yahoo.co.jp/closedsearch/closedsearch?p=${q}&va=${q}&b=1&n=50`;
+  };
+  const buildMercariUrl = (query) => {
+    const q = encodeURIComponent(query);
+    return `https://jp.mercari.com/search?keyword=${q}&status=sold_out&sort=created_time&order=desc`;
+  };
+
+  // 写真振り分けモード
+  const [sorterMode, setSorterMode] = useState(false);
+  const [sorterPhotos, setSorterPhotos] = useState([]);
+  const [sorterSplits, setSorterSplits] = useState(new Set());
+  const [sorterSelected, setSorterSelected] = useState(-1);
+  const [sorterPreview, setSorterPreview] = useState(null);
 
   // 初期ロード時にlocalStorageから復元
   useEffect(() => {
@@ -972,70 +1034,12 @@ function App() {
     });
   };
 
-  // 価格参照データ読込（類似商品検索用）
-  const handleRefPriceFiles = (files) => {
-    const all = [];
-    let done = 0;
-    files.forEach(f => {
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        const wb = XLSX.read(new Uint8Array(ev.target.result), { type: 'array' });
-        const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
-        // Keywordとメルカリ販売価格(入力)があるものだけ抽出
-        const valid = json.filter(r => r['Keyword'] && r['メルカリ販売価格(入力)']);
-        all.push(...valid);
-        if (++done === files.length) {
-          // 重複除去（Keywordでグルーピング）
-          const grouped = {};
-          all.forEach(r => {
-            const kw = String(r['Keyword']).trim();
-            const price = parseInt(r['メルカリ販売価格(入力)']);
-            if (!price || isNaN(price)) return;
-            if (!grouped[kw]) grouped[kw] = [];
-            grouped[kw].push(price);
-          });
-          const unique = Object.entries(grouped).map(([kw, prices]) => ({
-            keyword: kw,
-            price: Math.round(prices.reduce((a,b) => a+b, 0) / prices.length), // 平均
-            count: prices.length
-          }));
-          setRefPriceData(unique);
-          setMessage(`価格参照: ${unique.length}件（${all.length}行から）`);
-        }
-      };
-      reader.readAsArrayBuffer(f);
-    });
-  };
-
-  // 類似商品検索
-  const searchSimilarProducts = (product) => {
-    if (refPriceData.length === 0) return [];
-    const s = product.specs || {};
-    const searchTerms = [
-      s.maker,
-      s.product_name,
-      s.cpu,
-      s.memory,
-      s.storage
-    ].filter(Boolean).map(t => String(t).toLowerCase());
-    
-    // スコア計算
-    const results = refPriceData.map(ref => {
-      const kw = ref.keyword.toLowerCase();
-      let score = 0;
-      searchTerms.forEach(term => {
-        if (kw.includes(term)) score += 10;
-        // 部分一致も考慮
-        term.split(/\s+/).forEach(word => {
-          if (word.length > 2 && kw.includes(word)) score += 3;
-        });
-      });
-      return { ...ref, score };
-    }).filter(r => r.score > 0);
-    
-    // スコア順にソート
-    results.sort((a, b) => b.score - a.score);
-    return results.slice(0, 10);
+  // 自動価格計算: 仕入原価 → 販売価格
+  // 式: 販売価格 = ROUND((仕入原価 + 送料1500 + 梱包材1000) / (1 - 手数料0.1 - 利益率0.2), 0)
+  //    = ROUND((仕入原価 + 2500) / 0.7, 0)
+  const calcSellingPrice = (purchaseCost) => {
+    if (!purchaseCost || isNaN(purchaseCost) || purchaseCost <= 0) return null;
+    return Math.round((purchaseCost + 2500) / 0.7);
   };
 
   // 画像読込（ファイル配列を受け取る - フォルダでもファイル直接でもOK）
@@ -1107,6 +1111,79 @@ function App() {
     setMessage(`${prods.length}商品`);
     setStep(2);
     setLoading(false);
+  };
+
+  // === 写真振り分けモード ===
+  const handleSorterFiles = async (files) => {
+    setLoading(true);
+    setMessage('写真読込中...');
+    const photos = [];
+    for (const f of files) {
+      const name = f.name;
+      const ext = name.split('.').pop().toLowerCase();
+      if (!['jpg','jpeg','png','gif','webp'].includes(ext)) continue;
+      try {
+        const dataUrl = await new Promise((res, rej) => {
+          const rd = new FileReader();
+          rd.onload = e => res(e.target.result);
+          rd.onerror = rej;
+          rd.readAsDataURL(f);
+        });
+        photos.push({ id: name, filename: name, dataUrl, file: f });
+      } catch(e) { console.error(e); }
+    }
+    photos.sort((a,b) => a.filename.localeCompare(b.filename));
+    if (photos.length === 0) { setMessage('画像が見つかりません'); setLoading(false); return; }
+    setSorterPhotos(photos);
+    setSorterSplits(new Set());
+    setSorterSelected(-1);
+    setSorterMode(true);
+    setLoading(false);
+    setMessage('');
+  };
+
+  const sorterToggleSplit = () => {
+    if (sorterSelected < 0 || sorterSelected >= sorterPhotos.length - 1) return;
+    const sp = sorterSelected + 1;
+    setSorterSplits(prev => {
+      const n = new Set(prev);
+      n.has(sp) ? n.delete(sp) : n.add(sp);
+      return n;
+    });
+  };
+
+  const sorterUndoSplit = () => {
+    setSorterSplits(prev => {
+      if (prev.size === 0) return prev;
+      const sorted = Array.from(prev).sort((a,b) => b - a);
+      const n = new Set(prev);
+      n.delete(sorted[0]);
+      return n;
+    });
+  };
+
+  const sorterGetGroups = () => {
+    const sorted = [0, ...Array.from(sorterSplits).sort((a,b) => a - b)];
+    return sorted.map((start, i) => {
+      const end = i + 1 < sorted.length ? sorted[i + 1] : sorterPhotos.length;
+      return { start, end, count: end - start, photos: sorterPhotos.slice(start, end) };
+    });
+  };
+
+  const sorterFinish = () => {
+    const groups = sorterGetGroups();
+    const prods = groups.map((g, i) => {
+      const folder = `PC_${String(i+1).padStart(3,'0')}`;
+      return {
+        id: folder, folder,
+        images: g.photos.map(p => ({ id: p.id, filename: p.filename, dataUrl: p.dataUrl, excluded: false })),
+        barcode: null
+      };
+    });
+    setProducts(prods);
+    setSorterMode(false);
+    setMessage(`${prods.length}商品に振り分けました`);
+    setStep(2);
   };
 
   // OCR
@@ -1300,12 +1377,17 @@ function App() {
       const specs = extractSpecs(row);
       const type = detectProductType(row, specs);
       const priceRow = findPrice(p.barcode);
-      const price = priceRow ? parseInt(priceRow['メルカリ販売価格(入力)']) || null : null;
+      let price = priceRow ? parseInt(priceRow['メルカリ販売価格(入力)']) || null : null;
+      // 価格Excelに無ければ仕入原価から自動計算
+      const purchaseCost = parseInt(row['成約金額']) || parseInt(row['自社入札金額']) || null;
+      if (!price && purchaseCost) {
+        price = calcSellingPrice(purchaseCost);
+      }
       const rank = String(row['評価点'] || '').trim().toUpperCase();
       const acc = parseAccessories(row['付属品情報'] || '');
       const defect = [row['瑕疵情報1'], row['瑕疵情報2']].filter(x => x && !x.includes('中古品の為')).join('、');
       return {
-        ...p, status: 'ok', specs, product_type: type, price, rank,
+        ...p, status: 'ok', specs, product_type: type, price, purchaseCost, rank,
         condition: CONDITION_MAP[rank] || 'やや傷や汚れあり',
         accessories: acc, defect_info: defect,
         is_english_kb: (row['付属品情報'] || '').includes('英字KB'),
@@ -1330,21 +1412,21 @@ function App() {
         np[i].intro = apiKey ? await generateIntro(apiKey, np[i]) : `${np[i].specs?.maker || ''}の中古PCです。`;
         // タイトルと説明文も事前生成
         np[i].title = np[i].title || makeTitle(np[i]);
-        np[i].description = np[i].description || makeDescription(np[i]);
+        np[i].description = np[i].description || makeDescription(np[i], noticeText);
         setProducts([...np]);
         setMessage(`紹介文生成中... (${i+1}/${np.length})`);
       } catch (e) {
         console.error('紹介文生成エラー:', e);
         np[i].intro = `${np[i].specs?.maker || ''}の中古PCです。`;
         np[i].title = np[i].title || makeTitle(np[i]);
-        np[i].description = np[i].description || makeDescription(np[i]);
+        np[i].description = np[i].description || makeDescription(np[i], noticeText);
       }
     }
     
     // バーコードある商品のタイトル・説明文を生成
     np.forEach(p => {
       if (p.barcode && !p.title) p.title = makeTitle(p);
-      if (p.barcode && !p.description) p.description = makeDescription(p);
+      if (p.barcode && !p.description) p.description = makeDescription(p, noticeText);
     });
     
     setProducts(np);
@@ -1386,7 +1468,7 @@ function App() {
       return [
         ...imgs,                           // 商品画像名_1～20
         p.title || makeTitle(p),           // 商品名（編集済みがあればそれを使用）
-        p.description || makeDescription(p), // 商品説明（編集済みがあればそれを使用）
+        p.description || makeDescription(p, noticeText), // 商品説明（編集済みがあればそれを使用）
         '',                                // SKU1_種類
         1,                                 // SKU1_在庫数
         '',                                // SKU1_商品管理コード（空）
@@ -1441,13 +1523,16 @@ function App() {
         <div className="bg-white rounded shadow p-3 mb-4 flex gap-6 text-sm items-center">
           <span>仕入: <b>{purchaseData.length}</b></span>
           <span>価格: <b>{priceData.length}</b></span>
-          <span className="text-orange-600">参照: <b>{refPriceData.length}</b></span>
           <span>API: {apiKey ? '✓' : '未設定'}</span>
           <span className="text-purple-600">🤖 {aiModel}</span>
-          {(purchaseData.length > 0 || priceData.length > 0 || refPriceData.length > 0) && (
+          {(purchaseData.length > 0 || priceData.length > 0) && (
             <button onClick={clearSavedData} className="text-red-500 hover:text-red-700 text-xs">🗑️ データクリア</button>
           )}
           <span className="ml-auto text-gray-500">Step {step}/5</span>
+          <button onClick={() => setShowNoticeEditor(true)} className="text-gray-500 hover:text-gray-700 text-xs ml-2">📝 保証文</button>
+          {sorterPhotos.length > 0 && !sorterMode && (
+            <button onClick={() => setSorterMode(true)} className="text-blue-500 hover:text-blue-700 text-xs ml-2">📷 振り分け再開</button>
+          )}
         </div>
 
         {message && <div className={`px-4 py-2 rounded mb-4 border ${message.startsWith('❌') ? 'bg-red-50 border-red-200 text-red-700' : message.startsWith('✅') ? 'bg-green-50 border-green-200 text-green-700' : 'bg-blue-50 border-blue-200 text-blue-700'}`}>{message}</div>}
@@ -1456,12 +1541,11 @@ function App() {
         {step === 1 && (
           <div>
             {/* 保存データがある場合の表示 */}
-            {(purchaseData.length > 0 || priceData.length > 0 || refPriceData.length > 0) && (
+            {(purchaseData.length > 0 || priceData.length > 0) && (
               <div className="bg-green-50 border border-green-200 rounded p-3 mb-4 text-sm">
                 <span className="font-medium text-green-700">💾 保存済みデータ: </span>
                 {purchaseData.length > 0 && <span className="mr-3">仕入CSV {purchaseData.length}件</span>}
                 {priceData.length > 0 && <span className="mr-3">価格データ {priceData.length}件</span>}
-                {refPriceData.length > 0 && <span>価格参照 {refPriceData.length}件</span>}
                 <span className="text-green-600 ml-2">（自動復元済み）</span>
               </div>
             )}
@@ -1481,15 +1565,6 @@ function App() {
                 accept=".xlsx,.xls,.csv"
                 multiple={true}
                 onFiles={handlePriceFiles}
-              />
-              <DropZone
-                title="価格参照"
-                icon="search"
-                color="orange"
-                accept=".xlsx,.xls"
-                multiple={true}
-                onFiles={handleRefPriceFiles}
-                hint="類似商品検索用"
               />
               <div className="bg-white rounded shadow p-4">
                 <h3 className="font-bold mb-3 flex items-center gap-2"><Icon name="key" className="w-5 h-5 text-purple-500"/>OpenAI API</h3>
@@ -1517,6 +1592,15 @@ function App() {
                 directory={true}
                 onFiles={handleImageFiles}
                 hint="ドラッグ or 下のボタン"
+              />
+              <DropZone
+                title="写真振り分け"
+                icon="image"
+                color="blue"
+                accept="image/*"
+                multiple={true}
+                onFiles={handleSorterFiles}
+                hint="未整理写真をドロップ"
               />
             </div>
             {/* 商品データがある場合、Step2に戻れるボタン */}
@@ -1760,9 +1844,7 @@ function App() {
           <div className="bg-white rounded shadow p-4">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-bold">価格確認</h2>
-              {refPriceData.length > 0 && (
-                <span className="text-sm text-orange-600">📊 価格参照: {refPriceData.length}件</span>
-              )}
+              <span className="text-xs text-gray-500">💡 価格Excel未設定時は仕入原価から自動計算（利益20%+手数料10%+送料¥1,500+梱包¥1,000）</span>
             </div>
             <table className="w-full text-sm">
               <thead className="bg-gray-50">
@@ -1770,7 +1852,9 @@ function App() {
                   <th className="px-3 py-2 text-left">フォルダ</th>
                   <th className="px-3 py-2 text-left">BC（クリックで編集）</th>
                   <th className="px-3 py-2 text-left">商品</th>
-                  <th className="px-3 py-2 text-right">価格</th>
+                  <th className="px-3 py-2 text-right">仕入</th>
+                  <th className="px-3 py-2 text-right">販売価格</th>
+                  <th className="px-3 py-2 text-center">相場</th>
                   <th className="px-3 py-2">状態</th>
                 </tr>
               </thead>
@@ -1779,6 +1863,8 @@ function App() {
                   const activeImgs = p.images.filter(img => !img.excluded);
                   const bcImg = activeImgs.length > 0 ? activeImgs[activeImgs.length - 1] : null;
                   const hasPrice = p.price && p.price > 0;
+                  const profit = hasPrice && p.purchaseCost ? p.price - Math.round(p.price * 0.1) - 1500 - 1000 - p.purchaseCost : null;
+                  const profitRate = profit && p.price ? Math.round(profit / p.price * 100) : null;
                   const rowBg = p.status !== 'ok' ? 'bg-red-50' : (!hasPrice ? 'bg-yellow-50' : (i % 2 ? 'bg-gray-50' : ''));
                   return (
                   <tr key={p.id} className={rowBg}>
@@ -1797,19 +1883,29 @@ function App() {
                       </div>
                     </td>
                     <td className="px-3 py-2">{p.specs?.maker} {p.specs?.product_name}</td>
+                    <td className="px-3 py-2 text-right text-gray-500">
+                      {p.purchaseCost ? `¥${p.purchaseCost.toLocaleString()}` : '-'}
+                    </td>
                     <td className="px-3 py-2 text-right">
                       <div className="flex items-center justify-end gap-1">
                         <input type="number" value={p.price || ''} onChange={e => { const np = [...products]; np[i].price = parseInt(e.target.value) || null; setProducts(np); }} placeholder="999999" className={`w-24 border rounded px-2 py-1 text-right ${!hasPrice ? 'border-yellow-400 bg-yellow-50' : ''}`}/>
-                        {refPriceData.length > 0 && p.status === 'ok' && (
-                          <button 
-                            onClick={() => setPriceSearchModal({ productIdx: i, results: searchSimilarProducts(p) })}
-                            className="p-1 text-orange-500 hover:text-orange-700 hover:bg-orange-50 rounded"
-                            title="類似商品から価格を検索"
-                          >
-                            🔍
-                          </button>
-                        )}
                       </div>
+                      {profit !== null && (
+                        <div className={`text-xs mt-0.5 ${profit > 0 ? 'text-green-600' : 'text-red-500'}`}>
+                          利益 ¥{profit.toLocaleString()} ({profitRate}%)
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-2 py-2 text-center">
+                      {p.status === 'ok' && (() => {
+                        const q = buildSearchQuery(p);
+                        return q ? (
+                          <div className="flex gap-1 justify-center">
+                            <a href={buildYahooUrl(q)} target="_blank" rel="noopener" className="px-1.5 py-0.5 bg-red-100 text-red-700 rounded text-xs hover:bg-red-200" title={`ヤフオク: ${q}`}>Y!</a>
+                            <a href={buildMercariUrl(q)} target="_blank" rel="noopener" className="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200" title={`メルカリ: ${q}`}>M</a>
+                          </div>
+                        ) : null;
+                      })()}
                     </td>
                     <td className="px-3 py-2 text-center">
                       {p.status !== 'ok' ? (
@@ -2001,80 +2097,37 @@ function App() {
         )}
       </div>
 
-      {loading && (
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
-          <div className="bg-white rounded p-6 flex items-center gap-3">
-            <Icon name="refresh" className="w-6 h-6 animate-spin text-blue-500"/>処理中...
+      {/* 保証文エディタ */}
+      {showNoticeEditor && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowNoticeEditor(false)}>
+          <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full max-h-[85vh] overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="p-4 border-b flex items-center justify-between">
+              <h3 className="font-bold text-lg">📝 保証文テンプレート編集</h3>
+              <button onClick={() => setShowNoticeEditor(false)} className="text-gray-500 hover:text-gray-700 text-2xl">&times;</button>
+            </div>
+            <div className="p-4">
+              <textarea
+                value={noticeText}
+                onChange={e => setNoticeText(e.target.value)}
+                rows={18}
+                className="w-full border rounded px-3 py-2 text-sm font-mono"
+              />
+              <div className="flex justify-between mt-3">
+                <button onClick={() => { setNoticeText(DEFAULT_NOTICE_TEXT); }} className="px-3 py-1 border rounded text-sm hover:bg-gray-50">デフォルトに戻す</button>
+                <div className="flex gap-2">
+                  <button onClick={() => setShowNoticeEditor(false)} className="px-4 py-2 border rounded">キャンセル</button>
+                  <button onClick={() => { localStorage.setItem('mercari_notice_text', noticeText); setShowNoticeEditor(false); setMessage('✅ 保証文を保存しました'); }} className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">保存</button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
 
-      {/* 価格検索モーダル */}
-      {priceSearchModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setPriceSearchModal(null)}>
-          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] overflow-hidden" onClick={e => e.stopPropagation()}>
-            <div className="p-4 border-b bg-orange-50 flex items-center justify-between">
-              <h3 className="font-bold text-lg">🔍 類似商品から価格を検索</h3>
-              <button onClick={() => setPriceSearchModal(null)} className="text-gray-500 hover:text-gray-700 text-2xl">&times;</button>
-            </div>
-            <div className="p-4 border-b bg-gray-50">
-              <div className="text-sm text-gray-600">
-                検索対象: <span className="font-medium text-gray-900">
-                  {products[priceSearchModal.productIdx]?.specs?.maker} {products[priceSearchModal.productIdx]?.specs?.product_name}
-                </span>
-              </div>
-              <div className="text-xs text-gray-500 mt-1">
-                CPU: {products[priceSearchModal.productIdx]?.specs?.cpu} / 
-                メモリ: {products[priceSearchModal.productIdx]?.specs?.memory} / 
-                ストレージ: {products[priceSearchModal.productIdx]?.specs?.storage}
-              </div>
-            </div>
-            <div className="overflow-y-auto" style={{maxHeight: 'calc(80vh - 180px)'}}>
-              {priceSearchModal.results.length === 0 ? (
-                <div className="p-8 text-center text-gray-500">
-                  類似商品が見つかりませんでした
-                </div>
-              ) : (
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-100 sticky top-0">
-                    <tr>
-                      <th className="px-4 py-2 text-left">商品</th>
-                      <th className="px-4 py-2 text-right">価格</th>
-                      <th className="px-4 py-2 text-center">件数</th>
-                      <th className="px-4 py-2"></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {priceSearchModal.results.map((r, i) => (
-                      <tr key={i} className={`border-b hover:bg-orange-50 ${i === 0 ? 'bg-orange-100' : ''}`}>
-                        <td className="px-4 py-3">
-                          <div className="font-medium">{r.keyword}</div>
-                          <div className="text-xs text-gray-500">スコア: {r.score}</div>
-                        </td>
-                        <td className="px-4 py-3 text-right font-bold text-lg">¥{r.price.toLocaleString()}</td>
-                        <td className="px-4 py-3 text-center text-gray-500">x{r.count}</td>
-                        <td className="px-4 py-3 text-center">
-                          <button 
-                            onClick={() => {
-                              const np = [...products];
-                              np[priceSearchModal.productIdx].price = r.price;
-                              setProducts(np);
-                              setPriceSearchModal(null);
-                            }}
-                            className="px-3 py-1 bg-orange-500 text-white rounded hover:bg-orange-600 text-sm"
-                          >
-                            適用
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-            <div className="p-3 border-t bg-gray-50 text-right">
-              <button onClick={() => setPriceSearchModal(null)} className="px-4 py-2 border rounded hover:bg-gray-100">閉じる</button>
-            </div>
+      {loading && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
+          <div className="bg-white rounded p-6 flex items-center gap-3">
+            <Icon name="refresh" className="w-6 h-6 animate-spin text-blue-500"/>処理中...
           </div>
         </div>
       )}
@@ -2113,6 +2166,121 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* 写真振り分けモード */}
+      {sorterMode && (() => {
+        const groups = sorterGetGroups();
+        const currentGroup = groups.find(g => sorterSelected >= g.start && sorterSelected < g.end);
+        return (
+        <div className="sorter-overlay" onKeyDown={e => {
+          if (sorterPreview) {
+            if (e.key === 'Escape' || e.key === ' ') { e.preventDefault(); setSorterPreview(null); }
+            else if (e.key === 'ArrowLeft' && sorterSelected > 0) { e.preventDefault(); setSorterSelected(s => s-1); setSorterPreview(sorterPhotos[sorterSelected-1]?.dataUrl); }
+            else if (e.key === 'ArrowRight' && sorterSelected < sorterPhotos.length-1) { e.preventDefault(); setSorterSelected(s => s+1); setSorterPreview(sorterPhotos[sorterSelected+1]?.dataUrl); }
+            return;
+          }
+          if (e.key === 'ArrowRight') { e.preventDefault(); setSorterSelected(s => Math.min(sorterPhotos.length-1, s+1)); }
+          else if (e.key === 'ArrowLeft') { e.preventDefault(); setSorterSelected(s => Math.max(0, s-1)); }
+          else if (e.key === 's' || e.key === 'S') { e.preventDefault(); sorterToggleSplit(); }
+          else if (e.key === 'z' || e.key === 'Z') { e.preventDefault(); sorterUndoSplit(); }
+          else if (e.key === ' ') { e.preventDefault(); if (sorterSelected >= 0) setSorterPreview(sorterPhotos[sorterSelected]?.dataUrl); }
+          else if (e.key === 'Escape') { if (confirm('振り分けを中止しますか？')) setSorterMode(false); }
+        }} tabIndex={0} ref={el => el && el.focus()}>
+          <div className="sorter-header">
+            <h2>📷 写真振り分けモード</h2>
+            <div className="sorter-stats">
+              <div className="sorter-stat">写真: <b>{sorterPhotos.length}</b></div>
+              <div className="sorter-stat">PC数: <b>{groups.length}</b></div>
+              {currentGroup && <div className="sorter-stat">現在: <b>{currentGroup.count}</b>枚</div>}
+            </div>
+          </div>
+          <div className="sorter-toolbar">
+            <button className="sbtn sbtn-split" onClick={sorterToggleSplit}>✂ ここで区切る (S)</button>
+            <button className="sbtn sbtn-undo" onClick={sorterUndoSplit}>↩ 戻す (Z)</button>
+            <button className="sbtn sbtn-done" onClick={sorterFinish} disabled={sorterSplits.size === 0}>
+              ✅ 振り分け完了 ({groups.length}台)
+            </button>
+            <button className="sbtn sbtn-cancel" onClick={() => { if(confirm('中止しますか？')) setSorterMode(false); }}>✕ 中止</button>
+            <div className="sorter-keys">
+              <kbd>S</kbd> 区切る <kbd>Z</kbd> 戻す <kbd>Space</kbd> プレビュー <kbd>←→</kbd> 移動
+            </div>
+          </div>
+          <div style={{display:'flex', flex:1, overflow:'hidden'}}>
+            {/* PC一覧サイドバー */}
+            <div className="sorter-sidebar">
+              {groups.map((g, i) => (
+                <div key={i}
+                  className={`sorter-pc-item ${currentGroup === g ? 's-active' : ''}`}
+                  onClick={() => setSorterSelected(g.start)}>
+                  <span>PC {i+1}</span><span style={{color:'#888',fontSize:12}}>{g.count}枚</span>
+                </div>
+              ))}
+            </div>
+            {/* 写真グリッド */}
+            <div className="sorter-grid">
+              {sorterPhotos.map((photo, i) => {
+                const isSplit = sorterSplits.has(i);
+                const isNextSplit = sorterSplits.has(i + 1);
+                const isSelected = i === sorterSelected;
+                // PC区切りヘッダー
+                const groupIdx = groups.findIndex(g => g.start === i);
+                return (
+                  <React.Fragment key={photo.id}>
+                    {(i === 0 || isSplit) && (
+                      <div className="sorter-divider">
+                        <span>PC {groupIdx >= 0 ? groupIdx + 1 : '?'}</span>
+                        <span>{groups[groupIdx]?.count || 0}枚</span>
+                      </div>
+                    )}
+                    <div
+                      className={`sorter-item ${isSelected ? 's-selected' : ''} ${isNextSplit ? 's-split' : ''}`}
+                      onClick={() => setSorterSelected(i)}
+                      onDoubleClick={() => setSorterPreview(photo.dataUrl)}
+                      draggable
+                      onDragStart={e => e.dataTransfer.setData('text/plain', i.toString())}
+                      onDragOver={e => e.preventDefault()}
+                      onDrop={e => {
+                        e.preventDefault();
+                        const from = parseInt(e.dataTransfer.getData('text/plain'));
+                        if (from === i) return;
+                        setSorterPhotos(prev => {
+                          const arr = [...prev];
+                          const [moved] = arr.splice(from, 1);
+                          arr.splice(i, 0, moved);
+                          return arr;
+                        });
+                        // splitPointsも調整
+                        setSorterSplits(prev => {
+                          const newSplits = new Set();
+                          Array.from(prev).sort((a,b)=>a-b).forEach(sp => {
+                            let ns = sp;
+                            if (from < i) { if(sp > from && sp <= i) ns=sp-1; else if(sp===from) ns=i; }
+                            else { if(sp >= i && sp < from) ns=sp+1; else if(sp===from) ns=i; }
+                            if(ns > 0 && ns < sorterPhotos.length) newSplits.add(ns);
+                          });
+                          return newSplits;
+                        });
+                        setSorterSelected(i);
+                      }}
+                    >
+                      <img src={photo.dataUrl} loading="lazy"/>
+                      <div className="s-label">{photo.filename.replace(/\.[^.]+$/, '').replace('IMG_', '')}</div>
+                    </div>
+                  </React.Fragment>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* プレビュー */}
+          {sorterPreview && (
+            <div className="sorter-preview active" onClick={() => setSorterPreview(null)}>
+              <img src={sorterPreview}/>
+            </div>
+          )}
+        </div>
+        );
+      })()}
     </div>
   );
 }
