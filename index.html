@@ -466,17 +466,19 @@ const classifyImages = async (key, images) => {
     image_url: { url: img.dataUrl, detail: 'low' }
   }));
   
-  const prompt = `これらの中古PC商品画像を分類してください。
-各画像について以下のカテゴリから1つ選んでください：
-- main: PC全体が見える写真（メイン画像）
-- screen: 画面・ディスプレイ（スペック表示含む）
-- keyboard: キーボード
-- side: 側面・ポート類
-- spec: スペック詳細・シール
-- barcode: バーコードラベル
-- other: その他
+  const prompt = `中古PC商品の画像を分類してください。各画像に1カテゴリ割り当て：
+- main: PCが開いた状態で全体が見える写真
+- screen: 画面のアップ（スペック表示・バージョン情報・システム情報）
+- keyboard: キーボードのアップ
+- side: 閉じた天面、側面ポート、底面、外装の写真（PCが閉じている画像は全てside）
+- battery: バッテリーレポート（powercfg/Battery report/充放電回数）
+- spec: ラベル・シール・仕様書のアップ
+- barcode: バーコードラベル（数字の羅列＋縦線）
+- other: 上記以外
 
-JSON形式で出力（indexは0から）:
+重要: PCが閉じている写真（天面ロゴ含む）はmainではなくsideです。
+
+JSON出力（indexは0始まり）:
 {"results":[{"index":0,"category":"main"},{"index":1,"category":"screen"},...]}`;
 
   const r = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -534,9 +536,9 @@ Office: ${officeInfo}
   return await callOpenAI(key, [{ role: 'user', content: prompt }], 200);
 };
 
-// 画像結合関数（2枚横並び or 4枚グリッド）+ 自動ダウンロード
-const mergeImages = async (images, cols = 2, folder = '') => {
-  const size = 1000; // 1枚あたりのサイズ
+// 画像結合関数（2枚横並び / 3枚L字 / 4枚グリッド）
+const mergeImages = async (images, cols = 2) => {
+  const size = 1000;
   const rows = Math.ceil(images.length / cols);
   const canvas = document.createElement('canvas');
   canvas.width = size * cols;
@@ -549,6 +551,7 @@ const mergeImages = async (images, cols = 2, folder = '') => {
     const img = new Image();
     await new Promise((resolve) => {
       img.onload = resolve;
+      img.onerror = resolve;
       img.src = images[i].dataUrl;
     });
     const col = i % cols;
@@ -557,16 +560,33 @@ const mergeImages = async (images, cols = 2, folder = '') => {
   }
   
   const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-  
-  // 自動ダウンロード
-  const timestamp = Date.now();
-  const filename = `_merged_${timestamp}.jpg`;
-  const a = document.createElement('a');
-  a.href = dataUrl;
-  a.download = filename;
-  a.click();
-  
+  const filename = `_merged_${Date.now()}.jpg`;
   return { dataUrl, filename };
+};
+
+// dataUrlをBlobに変換
+const dataUrlToBlob = (dataUrl) => {
+  const [header, data] = dataUrl.split(',');
+  const mime = header.match(/:(.*?);/)[1];
+  const bin = atob(data);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], { type: mime });
+};
+
+// フォルダに画像を保存
+const saveImageToFolder = async (dirHandle, filename, dataUrl) => {
+  try {
+    const blob = dataUrlToBlob(dataUrl);
+    const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    return true;
+  } catch (e) {
+    console.error('画像保存エラー:', e);
+    return false;
+  }
 };
 
 // アイコン
@@ -871,6 +891,7 @@ const DropZone = ({ title, icon, color, accept, multiple, directory, onFiles, hi
 function App() {
   const [step, setStep] = useState(1);
   const [apiKey, setApiKey] = useState(localStorage.getItem('openai_key') || '');
+  const [outputDirHandle, setOutputDirHandle] = useState(null); // 画像保存先フォルダ
   const [aiModel, setAiModel] = useState(localStorage.getItem('openai_model') || 'gpt-4o');
   const [purchaseData, setPurchaseData] = useState([]);
   const [priceData, setPriceData] = useState([]);
@@ -908,6 +929,7 @@ function App() {
   const [sorterPhotos, setSorterPhotos] = useState([]);
   const [sorterSplits, setSorterSplits] = useState(new Set());
   const [sorterBarcodes, setSorterBarcodes] = useState(new Set()); // バーコード画像のインデックス
+  const [sorterManualBC, setSorterManualBC] = useState(false); // 手動BC選択モード
   const [sorterSelected, setSorterSelected] = useState(-1);
   const [sorterPreview, setSorterPreview] = useState(null);
 
@@ -1123,84 +1145,141 @@ function App() {
   };
 
   // === 写真振り分けモード ===
-  // バーコード画像自動検出（バッチ処理）
+  // バーコード画像自動検出（ブラウザBarcodeDetector API → 高速・無料）
   const detectBarcodesInPhotos = async (photos) => {
-    if (!apiKey) { setMessage('⚠️ APIキー未設定のため手動で区切ってください'); return new Set(); }
-    const batchSize = 20;
     const barcodeSet = new Set();
-    for (let b = 0; b < photos.length; b += batchSize) {
-      const batch = photos.slice(b, b + batchSize);
-      setMessage(`バーコード検出中... ${Math.min(b + batchSize, photos.length)}/${photos.length}`);
-      try {
-        const imageContents = batch.map(p => ({
-          type: 'image_url',
-          image_url: { url: p.dataUrl, detail: 'low' }
-        }));
-        const r = await fetch('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-          body: JSON.stringify({
-            model: 'gpt-4o-mini',
-            messages: [{ role: 'user', content: [
-              { type: 'text', text: `${batch.length}枚の画像があります。各画像がバーコード/ラベルの画像かどうか判定してください。バーコード・シリアルナンバーラベル・管理番号シールの画像なら1、それ以外（PC本体・画面・キーボード等）なら0。\nJSON配列のみ出力: [0,1,0,...]` },
-              ...imageContents
-            ] }],
-            max_tokens: 200
-          })
-        });
-        const d = await r.json();
-        if (!d.error) {
-          const text = d.choices[0].message.content.trim();
-          const arrMatch = text.match(/\[[\d\s,]+\]/);
-          if (arrMatch) {
-            const arr = JSON.parse(arrMatch[0]);
-            arr.forEach((v, i) => { if (v === 1) barcodeSet.add(b + i); });
-          }
-        }
-      } catch (e) { console.error('バーコード検出エラー:', e); }
+    
+    // BarcodeDetector API対応チェック
+    const hasBarcodeAPI = typeof BarcodeDetector !== 'undefined';
+    let detector = null;
+    if (hasBarcodeAPI) {
+      try { detector = new BarcodeDetector({ formats: ['code_128', 'code_39', 'ean_13', 'ean_8', 'qr_code', 'itf', 'codabar'] }); }
+      catch(e) { console.warn('BarcodeDetector初期化失敗:', e); }
     }
+    
+    if (detector) {
+      // ブラウザ内検出（並列処理、超高速）
+      const concurrency = 10;
+      for (let b = 0; b < photos.length; b += concurrency) {
+        const batch = photos.slice(b, Math.min(b + concurrency, photos.length));
+        if (b % 100 === 0) setMessage(`バーコード検出中（ローカル）... ${Math.min(b + concurrency, photos.length)}/${photos.length}`);
+        
+        const promises = batch.map((photo, bi) => {
+          const idx = b + bi;
+          return new Promise(resolve => {
+            const img = new Image();
+            img.onload = async () => {
+              try {
+                // 小さいcanvasで高速化
+                const canvas = document.createElement('canvas');
+                const scale = Math.min(1, 800 / Math.max(img.width, img.height));
+                canvas.width = img.width * scale;
+                canvas.height = img.height * scale;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                const barcodes = await detector.detect(canvas);
+                if (barcodes.length > 0) resolve(idx);
+                else resolve(null);
+              } catch(e) { resolve(null); }
+            };
+            img.onerror = () => resolve(null);
+            img.src = photo.dataUrl;
+          });
+        });
+        
+        const results = await Promise.all(promises);
+        results.forEach(idx => { if (idx !== null) barcodeSet.add(idx); });
+      }
+      setMessage(`✅ ローカル検出完了: ${barcodeSet.size}枚のバーコード発見`);
+    } else if (apiKey) {
+      // フォールバック: GPT API（BarcodeDetector非対応ブラウザ用）
+      const batchSize = 20;
+      for (let b = 0; b < photos.length; b += batchSize) {
+        const batch = photos.slice(b, b + batchSize);
+        setMessage(`バーコード検出中（API）... ${Math.min(b + batchSize, photos.length)}/${photos.length}`);
+        try {
+          const imageContents = batch.map(p => ({
+            type: 'image_url',
+            image_url: { url: p.dataUrl, detail: 'low' }
+          }));
+          const r = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+            body: JSON.stringify({
+              model: 'gpt-4o-mini',
+              messages: [{ role: 'user', content: [
+                { type: 'text', text: `${batch.length}枚の画像があります。各画像がバーコード/ラベルの画像かどうか判定してください。バーコード・シリアルナンバーラベル・管理番号シールの画像なら1、それ以外（PC本体・画面・キーボード等）なら0。\nJSON配列のみ出力: [0,1,0,...]` },
+                ...imageContents
+              ] }],
+              max_tokens: 200
+            })
+          });
+          const d = await r.json();
+          if (!d.error) {
+            const text = d.choices[0].message.content.trim();
+            const arrMatch = text.match(/\[[\d\s,]+\]/);
+            if (arrMatch) {
+              const arr = JSON.parse(arrMatch[0]);
+              arr.forEach((v, i) => { if (v === 1) barcodeSet.add(b + i); });
+            }
+          }
+        } catch (e) { console.error('バーコード検出エラー:', e); }
+      }
+    } else {
+      setMessage('⚠️ 手動で区切ってください（BarcodeDetector非対応・APIキー未設定）');
+    }
+    
     return barcodeSet;
   };
 
   const handleSorterFiles = async (files) => {
     setLoading(true);
     setMessage('写真読込中...');
+    const validFiles = Array.from(files).filter(f => {
+      const ext = f.name.split('.').pop().toLowerCase();
+      return ['jpg','jpeg','png','gif','webp'].includes(ext);
+    });
+    if (validFiles.length === 0) { setMessage('画像が見つかりません'); setLoading(false); return; }
+    
+    // ファイル名順ソート
+    validFiles.sort((a,b) => a.name.localeCompare(b.name));
+    
+    // バッチ読込（メモリ管理 + 進捗表示）
     const photos = [];
-    for (const f of files) {
-      const name = f.name;
-      const ext = name.split('.').pop().toLowerCase();
-      if (!['jpg','jpeg','png','gif','webp'].includes(ext)) continue;
-      try {
-        const dataUrl = await new Promise((res, rej) => {
-          const rd = new FileReader();
-          rd.onload = e => res(e.target.result);
-          rd.onerror = rej;
-          rd.readAsDataURL(f);
-        });
-        photos.push({ id: name, filename: name, dataUrl, file: f });
-      } catch(e) { console.error(e); }
+    const readBatch = 50;
+    for (let b = 0; b < validFiles.length; b += readBatch) {
+      const batch = validFiles.slice(b, b + readBatch);
+      if (b % 200 === 0) setMessage(`写真読込中... ${Math.min(b + readBatch, validFiles.length)}/${validFiles.length}`);
+      const results = await Promise.all(batch.map(f => new Promise(resolve => {
+        const rd = new FileReader();
+        rd.onload = e => resolve({ id: f.name, filename: f.name, dataUrl: e.target.result, file: f });
+        rd.onerror = () => resolve(null);
+        rd.readAsDataURL(f);
+      })));
+      results.forEach(r => { if (r) photos.push(r); });
     }
-    photos.sort((a,b) => a.filename.localeCompare(b.filename));
-    if (photos.length === 0) { setMessage('画像が見つかりません'); setLoading(false); return; }
+    
+    setMessage(`${photos.length}枚読込完了、バーコード検出中...`);
     setSorterPhotos(photos);
     setSorterSplits(new Set());
     setSorterBarcodes(new Set());
+    setSorterManualBC(false);
     setSorterSelected(-1);
     setSorterMode(true);
 
     // 自動バーコード検出
     const bcSet = await detectBarcodesInPhotos(photos);
     setSorterBarcodes(bcSet);
-    // バーコード画像の次で自動区切り
     if (bcSet.size > 0) {
       const autoSplits = new Set();
       Array.from(bcSet).sort((a,b) => a - b).forEach(idx => {
         if (idx + 1 < photos.length) autoSplits.add(idx + 1);
       });
       setSorterSplits(autoSplits);
-      setMessage(`✅ ${bcSet.size}枚のバーコードを検出、${autoSplits.size}グループに自動分割しました`);
+      setMessage(`✅ ${bcSet.size}枚のバーコードを検出、${autoSplits.size}グループに自動分割`);
     } else {
       setMessage('バーコード未検出。手動で区切ってください');
+      setSorterManualBC(true);
     }
     setLoading(false);
   };
@@ -1239,7 +1318,6 @@ function App() {
     const groups = sorterGetGroups();
     const prods = groups.map((g, i) => {
       const folder = `PC_${String(i+1).padStart(3,'0')}`;
-      // グループ内のバーコード画像を特定
       const bcPhotoIdx = g.photos.findIndex((_, pi) => sorterBarcodes.has(g.start + pi));
       return {
         id: folder, folder,
@@ -1248,7 +1326,7 @@ function App() {
           isBarcode: sorterBarcodes.has(g.start + pi)
         })),
         barcode: null,
-        _bcPhotoIdx: bcPhotoIdx >= 0 ? bcPhotoIdx : g.photos.length - 1 // バーコード画像の位置
+        _bcPhotoIdx: bcPhotoIdx >= 0 ? bcPhotoIdx : g.photos.length - 1
       };
     });
     
@@ -1266,15 +1344,72 @@ function App() {
           } catch (e) { console.error('OCRエラー:', e); }
         }
       }
+      
+      // 自動並び替え＆結合
+      for (let i = 0; i < prods.length; i++) {
+        setMessage(`画像分類＆並替中... ${i+1}/${prods.length}`);
+        const p = prods[i];
+        const activeImgs = p.images.filter(img => !img.excluded);
+        if (activeImgs.length < 2) continue;
+        try {
+          const classifications = await classifyImages(apiKey, activeImgs);
+          if (!classifications) continue;
+          
+          const byCategory = { main: [], screen: [], keyboard: [], side: [], battery: [], spec: [], barcode: [], other: [] };
+          classifications.forEach(c => {
+            const img = activeImgs[c.index];
+            if (img && byCategory[c.category]) byCategory[c.category].push(img);
+            else if (img) byCategory.other.push(img);
+          });
+          
+          // 並び順: main(2) → screen(2) → keyboard(1) → side(結合) → battery(1) → spec(結合) → other → barcode
+          const sorted = [];
+          const toMerge = [];
+          
+          sorted.push(...byCategory.main.slice(0, 2));
+          if (byCategory.main.length > 2) byCategory.other.push(...byCategory.main.slice(2));
+          
+          if (byCategory.screen.length <= 2) { sorted.push(...byCategory.screen); }
+          else { sorted.push(...byCategory.screen.slice(0, 1)); toMerge.push({ name: 'screen', imgs: byCategory.screen.slice(1) }); }
+          
+          sorted.push(...byCategory.keyboard.slice(0, 1));
+          if (byCategory.keyboard.length > 1) byCategory.other.push(...byCategory.keyboard.slice(1));
+          
+          if (byCategory.side.length >= 2) {
+            toMerge.push({ name: 'side', imgs: byCategory.side.slice(0, 4) });
+            if (byCategory.side.length > 4) byCategory.other.push(...byCategory.side.slice(4));
+          } else { sorted.push(...byCategory.side); }
+          
+          sorted.push(...byCategory.battery.slice(0, 1));
+          if (byCategory.battery.length > 1) byCategory.other.push(...byCategory.battery.slice(1));
+          
+          if (byCategory.spec.length >= 2) { toMerge.push({ name: 'spec', imgs: byCategory.spec }); }
+          else { sorted.push(...byCategory.spec); }
+          
+          sorted.push(...byCategory.other);
+          
+          for (const item of toMerge) {
+            if (item.imgs.length >= 2) {
+              const { dataUrl, filename } = await mergeImages(item.imgs, 2);
+              sorted.push({ id: `merged_${Date.now()}_${item.name}`, filename, dataUrl, excluded: false });
+            }
+          }
+          
+          sorted.push(...byCategory.barcode);
+          
+          const mergedIds = new Set(toMerge.flatMap(t => t.imgs.map(im => im.id)));
+          const excludedImgs = p.images.filter(img => img.excluded || mergedIds.has(img.id)).map(img => ({ ...img, excluded: true }));
+          p.images = [...sorted, ...excludedImgs];
+        } catch (e) { console.error('autoSortエラー:', e); }
+      }
     }
     
-    // 一時フィールド削除
     prods.forEach(p => delete p._bcPhotoIdx);
     
     setProducts(prods);
     setSorterMode(false);
     const ocrCount = prods.filter(p => p.barcode).length;
-    setMessage(`${prods.length}商品に振り分け${ocrCount > 0 ? `、${ocrCount}件バーコード読取済み` : ''}`);
+    setMessage(`✅ ${prods.length}商品に振り分け、${ocrCount}件BC読取、画像自動整理完了`);
     setStep(2);
     setLoading(false);
   };
@@ -1341,108 +1476,6 @@ function App() {
   };
 
   // 自動画像並び替え
-  const autoSortImages = async () => {
-    if (!apiKey) return setMessage('❌ APIキーを設定してください');
-    const cur = products[currentIdx];
-    if (!cur) return;
-    
-    const activeImgs = cur.images.filter(img => !img.excluded);
-    if (activeImgs.length < 2) return setMessage('並び替える画像がありません');
-    
-    setLoading(true);
-    setMessage('🔄 画像を分類中...');
-    
-    try {
-      const classifications = await classifyImages(apiKey, activeImgs);
-      if (!classifications) {
-        setMessage('❌ 分類に失敗しました');
-        setLoading(false);
-        return;
-      }
-      
-      // カテゴリごとに分類
-      const byCategory = { main: [], screen: [], keyboard: [], side: [], spec: [], barcode: [], other: [] };
-      classifications.forEach(c => {
-        const img = activeImgs[c.index];
-        if (img && byCategory[c.category]) {
-          byCategory[c.category].push(img);
-        } else if (img) {
-          byCategory.other.push(img);
-        }
-      });
-      
-      // 並び順: メイン2 → 画面3 → キーボード2 → 側面(結合) → スペック(結合) → その他 → バーコード
-      const sorted = [];
-      const toMerge = [];
-      
-      // メイン（最大2枚）
-      sorted.push(...byCategory.main.slice(0, 2));
-      if (byCategory.main.length > 2) byCategory.other.push(...byCategory.main.slice(2));
-      
-      // 画面（最大3枚、多い場合は結合候補）
-      if (byCategory.screen.length <= 3) {
-        sorted.push(...byCategory.screen);
-      } else {
-        sorted.push(...byCategory.screen.slice(0, 2));
-        toMerge.push({ name: 'screen', imgs: byCategory.screen.slice(2) });
-      }
-      
-      // キーボード（最大2枚）
-      sorted.push(...byCategory.keyboard.slice(0, 2));
-      if (byCategory.keyboard.length > 2) byCategory.other.push(...byCategory.keyboard.slice(2));
-      
-      // 側面（4枚以上なら結合）
-      if (byCategory.side.length >= 4) {
-        toMerge.push({ name: 'side', imgs: byCategory.side.slice(0, 4) });
-        if (byCategory.side.length > 4) byCategory.other.push(...byCategory.side.slice(4));
-      } else {
-        sorted.push(...byCategory.side);
-      }
-      
-      // スペック（2枚以上なら結合）
-      if (byCategory.spec.length >= 2) {
-        toMerge.push({ name: 'spec', imgs: byCategory.spec });
-      } else {
-        sorted.push(...byCategory.spec);
-      }
-      
-      // その他
-      sorted.push(...byCategory.other);
-      
-      // 結合処理
-      for (const item of toMerge) {
-        if (item.imgs.length >= 2) {
-          setMessage(`🔄 ${item.name}画像を結合中...`);
-          const cols = item.imgs.length <= 2 ? 2 : 2;
-          const { dataUrl, filename } = await mergeImages(item.imgs, cols);
-          sorted.push({ id: `merged_${Date.now()}_${item.name}`, filename, dataUrl, excluded: false });
-        }
-      }
-      
-      // バーコード（最後）
-      sorted.push(...byCategory.barcode);
-      
-      // 元の画像で結合されたものをexcluded扱いに
-      const mergedIds = new Set(toMerge.flatMap(t => t.imgs.map(i => i.id)));
-      const finalImages = cur.images.map(img => {
-        if (mergedIds.has(img.id)) return { ...img, excluded: true };
-        return img;
-      });
-      
-      // 並び替え結果を反映（excluded以外を置き換え）
-      const excludedImgs = finalImages.filter(img => img.excluded);
-      const newImages = [...sorted, ...excludedImgs];
-      
-      const np = [...products];
-      np[currentIdx].images = newImages;
-      setProducts(np);
-      setMessage(`✅ 並び替え完了！（${sorted.length}枚）`);
-    } catch (e) {
-      setMessage(`❌ エラー: ${e.message}`);
-    }
-    setLoading(false);
-  };
-
   // データ処理
   const processProducts = () => {
     setLoading(true);
@@ -1539,6 +1572,47 @@ function App() {
   };
 
   // CSV生成
+  // 出力フォルダ選択
+  const pickOutputFolder = async () => {
+    try {
+      const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      setOutputDirHandle(handle);
+      setMessage(`📁 保存先: ${handle.name}`);
+      return handle;
+    } catch (e) {
+      if (e.name !== 'AbortError') setMessage('❌ フォルダ選択失敗');
+      return null;
+    }
+  };
+
+  // 全商品の画像をフォルダに保存
+  const saveAllImages = async () => {
+    let dir = outputDirHandle;
+    if (!dir) {
+      dir = await pickOutputFolder();
+      if (!dir) return;
+    }
+    setLoading(true);
+    const okProducts = products.filter(p => p.barcode);
+    let saved = 0;
+    for (let pi = 0; pi < okProducts.length; pi++) {
+      const p = okProducts[pi];
+      const folderName = `${p.barcode}_${(p.specs?.maker || 'PC').replace(/[\\/:*?"<>|]/g, '')}`;
+      setMessage(`📁 保存中... ${pi + 1}/${okProducts.length} (${folderName})`);
+      try {
+        const subDir = await dir.getDirectoryHandle(folderName, { create: true });
+        const activeImgs = p.images.filter((img, i) => i < p.images.length - 1 && !img.excluded);
+        for (let i = 0; i < Math.min(activeImgs.length, 10); i++) {
+          const fname = `${String(i + 1).padStart(2, '0')}_${activeImgs[i].filename || `img_${i}.jpg`}`;
+          await saveImageToFolder(subDir, fname, activeImgs[i].dataUrl);
+          saved++;
+        }
+      } catch (e) { console.error(`保存エラー (${folderName}):`, e); }
+    }
+    setLoading(false);
+    setMessage(`✅ ${okProducts.length}商品 / ${saved}枚を保存しました`);
+  };
+
   const generateCsv = async () => {
     setLoading(true);
     setMessage('CSV生成中...');
@@ -1741,9 +1815,9 @@ function App() {
           <div className="bg-white rounded shadow">
             <div className="border-b p-4 flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <button onClick={() => { setCurrentIdx(Math.max(0, currentIdx-1)); setImageHistory([]); }} disabled={currentIdx===0} className="p-1 rounded hover:bg-gray-100 disabled:opacity-30"><Icon name="left"/></button>
+                <button onClick={() => { setCurrentIdx(Math.max(0, currentIdx-1)); setImageHistory([]); setSelectedImages([]); }} disabled={currentIdx===0} className="p-1 rounded hover:bg-gray-100 disabled:opacity-30"><Icon name="left"/></button>
                 <span className="font-bold">{currentIdx+1}/{products.length}</span>
-                <button onClick={() => { setCurrentIdx(Math.min(products.length-1, currentIdx+1)); setImageHistory([]); }} disabled={currentIdx===products.length-1} className="p-1 rounded hover:bg-gray-100 disabled:opacity-30"><Icon name="right"/></button>
+                <button onClick={() => { setCurrentIdx(Math.min(products.length-1, currentIdx+1)); setImageHistory([]); setSelectedImages([]); }} disabled={currentIdx===products.length-1} className="p-1 rounded hover:bg-gray-100 disabled:opacity-30"><Icon name="right"/></button>
                 <span className="text-gray-500">{cur.folder}</span>
                 {cur.barcode && <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded text-sm">{cur.barcode}</span>}
                 <label className="flex items-center gap-1 ml-4 cursor-pointer">
@@ -1849,7 +1923,7 @@ function App() {
                         className={`relative cursor-pointer ${isSelected ? 'ring-4 ring-blue-500' : ''} ${isBarcode ? 'ring-2 ring-red-400' : ''}`}>
                         <img src={img.dataUrl} className={`w-24 h-24 object-cover rounded border-2 ${isBarcode ? 'border-red-400' : 'border-gray-200'}`}/>
                         <span className={`absolute top-1 left-1 text-xs px-1 rounded ${isBarcode ? 'bg-red-500 text-white' : 'bg-black/50 text-white'}`}>{isBarcode ? '🔍BC' : displayNum}</span>
-                        {isSelected && <span className="absolute top-1 right-1 bg-blue-500 text-white text-xs px-1 rounded">✓</span>}
+                        {isSelected && <span className="absolute top-1 right-1 bg-blue-500 text-white text-xs w-5 h-5 flex items-center justify-center rounded-full font-bold">{selectedImages.indexOf(i) + 1}</span>}
                         <button onClick={(e) => { e.stopPropagation(); toggleExclude(i); }} className="absolute bottom-1 right-1 bg-white rounded-full p-0.5 opacity-70 hover:opacity-100">
                           <Icon name="eyeOff" className="w-3 h-3"/>
                         </button>
@@ -1893,40 +1967,27 @@ function App() {
                 <input type="text" value={cur.battery_health || ''} onChange={e => { const np = [...products]; np[currentIdx].battery_health = e.target.value; setProducts(np); }} className="w-full border rounded px-2 py-1 text-sm mb-4"/>
                 
                 <hr className="my-3"/>
-                <p className="text-xs text-gray-500 mb-2">クイック結合</p>
-                <button onClick={async () => {
-                  const active = cur.images.filter(img => !img.excluded);
-                  if (active.length < 3) return alert('結合には3枚以上必要（バーコード除く）');
+                <p className="text-xs text-gray-500 mb-2">画像結合</p>
+                <p className="text-xs mb-2">{selectedImages.length > 0 ? <span className="text-blue-600 font-bold">{selectedImages.length}枚選択中</span> : <span className="text-gray-400">クリックで選択</span>}</p>
+                <button disabled={selectedImages.length < 2} onClick={async () => {
+                  const selImgs = selectedImages.sort((a,b) => a - b).map(i => cur.images[i]).filter(img => img && !img.excluded);
+                  if (selImgs.length < 2) return;
                   saveHistory();
-                  const toMerge = active.slice(0, 2);
-                  const { dataUrl, filename } = await mergeImages(toMerge, 2);
+                  const cols = 2;
+                  const { dataUrl, filename } = await mergeImages(selImgs, cols);
                   const np = [...products];
                   const newImg = { id: `merged_${Date.now()}`, filename, dataUrl, excluded: false };
-                  const mergedIds = toMerge.map(img => img.id);
-                  // 元の位置（最初のactive画像の位置）に挿入
-                  const firstIdx = cur.images.findIndex(img => img.id === toMerge[0].id);
+                  const mergedIds = selImgs.map(img => img.id);
+                  const firstIdx = cur.images.findIndex(img => img.id === selImgs[0].id);
                   const newImages = cur.images.map(img => mergedIds.includes(img.id) ? {...img, excluded: true} : img);
                   newImages.splice(firstIdx, 0, newImg);
                   np[currentIdx].images = newImages;
                   setProducts(np);
-                }} className="w-full mb-2 px-2 py-1 bg-orange-500 text-white rounded text-sm">先頭2枚→1枚</button>
-                <button onClick={async () => {
-                  const active = cur.images.filter(img => !img.excluded);
-                  if (active.length < 5) return alert('結合には5枚以上必要（バーコード除く）');
-                  saveHistory();
-                  const toMerge = active.slice(0, 4);
-                  const { dataUrl, filename } = await mergeImages(toMerge, 2);
-                  const np = [...products];
-                  const newImg = { id: `merged_${Date.now()}`, filename, dataUrl, excluded: false };
-                  const mergedIds = toMerge.map(img => img.id);
-                  // 元の位置（最初のactive画像の位置）に挿入
-                  const firstIdx = cur.images.findIndex(img => img.id === toMerge[0].id);
-                  const newImages = cur.images.map(img => mergedIds.includes(img.id) ? {...img, excluded: true} : img);
-                  newImages.splice(firstIdx, 0, newImg);
-                  np[currentIdx].images = newImages;
-                  setProducts(np);
-                }} className="w-full mb-2 px-2 py-1 bg-orange-500 text-white rounded text-sm">先頭4枚→1枚</button>
-                
+                  setSelectedImages([]);
+                }} className="w-full mb-2 px-2 py-1 bg-orange-500 text-white rounded text-sm disabled:opacity-40">
+                  {selectedImages.length < 2 ? '2枚以上選択' : `${selectedImages.length}枚→1枚`}
+                </button>
+                {selectedImages.length > 0 && <button onClick={() => setSelectedImages([])} className="w-full mb-2 px-2 py-1 bg-gray-400 text-white rounded text-xs">選択解除</button>}
                 {imageHistory.length > 0 && (
                   <button onClick={undoMerge} className="w-full px-2 py-1 bg-yellow-500 text-white rounded text-sm">↩ 戻す ({imageHistory.length})</button>
                 )}
@@ -2069,8 +2130,14 @@ function App() {
           <div className="bg-white rounded shadow">
             <div className="p-4 border-b flex items-center justify-between">
               <h2 className="text-lg font-bold">プレビュー編集</h2>
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
                 <span className="text-sm text-gray-600">{okProducts.length}商品</span>
+                <button onClick={pickOutputFolder} className="px-3 py-1 border rounded text-sm hover:bg-gray-50">
+                  📁 {outputDirHandle ? outputDirHandle.name : '保存先'}
+                </button>
+                <button onClick={saveAllImages} className="px-3 py-1 bg-green-500 text-white rounded text-sm hover:bg-green-600">
+                  💾 全画像保存
+                </button>
                 <button onClick={() => setStep(3)} className="px-3 py-1 border rounded text-sm">戻る</button>
                 <button onClick={generateCsv} disabled={loading} className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 disabled:opacity-50">
                   {loading ? '処理中...' : 'CSV生成'}
@@ -2348,7 +2415,7 @@ function App() {
           if (e.key === 'ArrowRight') { e.preventDefault(); setSorterSelected(s => Math.min(sorterPhotos.length-1, s+1)); }
           else if (e.key === 'ArrowLeft') { e.preventDefault(); setSorterSelected(s => Math.max(0, s-1)); }
           else if (e.key === 's' || e.key === 'S') { e.preventDefault(); sorterToggleSplit(); }
-          else if (e.key === 'b' || e.key === 'B') { e.preventDefault(); if (sorterSelected >= 0) setSorterBarcodes(prev => { const n = new Set(prev); n.has(sorterSelected) ? n.delete(sorterSelected) : n.add(sorterSelected); return n; }); }
+          else if (e.key === 'b' || e.key === 'B') { e.preventDefault(); if (sorterSelected >= 0) setSorterBarcodes(prev => { const n = new Set(prev); n.has(sorterSelected) ? n.delete(sorterSelected) : n.add(sorterSelected); if (n.size > 0) setSorterManualBC(false); return n; }); }
           else if (e.key === 'z' || e.key === 'Z') { e.preventDefault(); sorterUndoSplit(); }
           else if (e.key === ' ') { e.preventDefault(); if (sorterSelected >= 0) setSorterPreview(sorterPhotos[sorterSelected]?.dataUrl); }
           else if (e.key === 'Escape') { if (confirm('振り分けを中止しますか？')) setSorterMode(false); }
@@ -2369,9 +2436,10 @@ function App() {
               setSorterBarcodes(prev => {
                 const n = new Set(prev);
                 n.has(sorterSelected) ? n.delete(sorterSelected) : n.add(sorterSelected);
+                if (n.size > 0) setSorterManualBC(false);
                 return n;
               });
-            }} title="選択画像のバーコードフラグ切替">🏷 BC切替</button>
+            }} title="選択画像のバーコードフラグ切替">🏷 BC切替 (B)</button>
             <button className="sbtn" style={{background:'#f59e0b'}} onClick={() => {
               const autoSplits = new Set();
               Array.from(sorterBarcodes).sort((a,b) => a - b).forEach(idx => {
@@ -2399,9 +2467,19 @@ function App() {
             </button>
             <button className="sbtn sbtn-cancel" onClick={() => { if(confirm('中止しますか？')) setSorterMode(false); }}>✕ 中止</button>
             <div className="sorter-keys">
-              <kbd>S</kbd> 区切る <kbd>Z</kbd> 戻す <kbd>Space</kbd> プレビュー <kbd>←→</kbd> 移動
+              <kbd>S</kbd> 区切る <kbd>B</kbd> BC切替 <kbd>Z</kbd> 戻す <kbd>Space</kbd> プレビュー <kbd>←→</kbd> 移動
             </div>
           </div>
+          {/* バーコード未検出アラート */}
+          {sorterManualBC && sorterBarcodes.size === 0 && (
+            <div style={{background:'#fef3c7',borderBottom:'2px solid #f59e0b',padding:'12px 20px',display:'flex',alignItems:'center',gap:12}}>
+              <span style={{fontSize:24}}>⚠️</span>
+              <div>
+                <div style={{fontWeight:'bold',color:'#92400e',marginBottom:2}}>バーコードが自動検出できませんでした</div>
+                <div style={{color:'#78350f',fontSize:13}}>バーコード画像を選択して <kbd style={{background:'#fff',border:'1px solid #d1d5db',borderRadius:3,padding:'1px 6px',fontSize:12}}>B</kbd> キーまたは「🏷 BC切替」ボタンでマーク → 「✂ BCで区切り直す」を押してください</div>
+              </div>
+            </div>
+          )}
           <div style={{display:'flex', flex:1, overflow:'hidden'}}>
             {/* PC一覧サイドバー */}
             <div className="sorter-sidebar">
