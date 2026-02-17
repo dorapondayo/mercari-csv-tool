@@ -944,27 +944,25 @@ function App() {
     }
   }, []);
 
-  // 仕入データ変更時に保存
+  // 仕入データ変更時に保存（500件以下のみ、超過時はセッション内のみ保持）
   useEffect(() => {
-    if (purchaseData.length > 0) {
+    if (purchaseData.length > 0 && purchaseData.length <= 500) {
       try {
         localStorage.setItem('mercari_purchase_data', JSON.stringify(purchaseData));
-        console.log(`仕入データ保存: ${purchaseData.length}件`);
-      } catch (e) {
-        console.error('仕入データ保存エラー:', e);
-      }
+      } catch (e) { /* quota exceeded */ }
+    } else if (purchaseData.length > 500) {
+      localStorage.removeItem('mercari_purchase_data');
     }
   }, [purchaseData]);
 
   // 価格データ変更時に保存
   useEffect(() => {
-    if (priceData.length > 0) {
+    if (priceData.length > 0 && priceData.length <= 500) {
       try {
         localStorage.setItem('mercari_price_data', JSON.stringify(priceData));
-        console.log(`価格データ保存: ${priceData.length}件`);
-      } catch (e) {
-        console.error('価格データ保存エラー:', e);
-      }
+      } catch (e) { /* quota exceeded */ }
+    } else if (priceData.length > 500) {
+      localStorage.removeItem('mercari_price_data');
     }
   }, [priceData]);
 
@@ -1585,7 +1583,12 @@ function App() {
       setMessage(`📁 保存中... ${pi + 1}/${okProducts.length} (${folderName})`);
       try {
         const subDir = await dir.getDirectoryHandle(folderName, { create: true });
-        const activeImgs = p.images.filter((img, i) => i < p.images.length - 1 && !img.excluded);
+        const allActive = p.images.filter(img => !img.excluded);
+        // isBarcode付き or 最後の1枚をバーコードとして除外
+        const hasBcFlag = allActive.some(img => img.isBarcode);
+        const activeImgs = hasBcFlag 
+          ? allActive.filter(img => !img.isBarcode)
+          : allActive.slice(0, -1); // フラグなし→最後の1枚をBC扱い
         for (let i = 0; i < Math.min(activeImgs.length, 10); i++) {
           const fname = `${String(i + 1).padStart(2, '0')}_${activeImgs[i].filename || `img_${i}.jpg`}`;
           await saveImageToFolder(subDir, fname, activeImgs[i].dataUrl);
