@@ -144,9 +144,9 @@ const ACCESSORY_MAP = {
 };
 const ACCESSORY_EXCLUDE = ['ﾊﾞｯﾃﾘﾊﾟｯｸ', 'Webｶﾒﾗ有', '英字KB', 'TV機能'];
 
-const DEFAULT_NOTICE_TEXT = `※ 実際の商品画像です。
-※ スペックや状態の詳細は画像からご確認ください。
-※ 中古品のため、使用に差し支えない傷や汚れがある場合があります。必ず写真をご確認ください。
+const DEFAULT_NOTICE_TEXT = `※実際の商品画像です。
+※スペックや状態の詳細は画像からご確認ください。
+※中古品のため、使用に差し支えない傷や汚れ・細かな見落としがある場合がございます。必ず写真をご確認ください。
 
 ■ 初期不良について
 出荷日から7日以内にご連絡いただいた初期不良（電源が入らない、画面が映らないなど）については、当店にて動作確認の上、無償で交換または修理対応を行います。
@@ -730,7 +730,7 @@ const makeDescription = (p, customNotice) => {
   const acc = `【付属品】\n${(p.accessories || []).join('、')}`;
   // ジャンク品の場合は専用テキスト、通常はconditionNotesのみ（CSV瑕疵の生テキストは出さない）
   const stateContent = p.isJunk ? JUNK_STATE_TEXT : (p.conditionNotes || '使用に伴う多少のスレがあります。');
-  const state = `【状態】\n${CONDITION_LABELS[p.condition] || 'やや傷や汚れあり'}\n${stateContent}\n※実際の商品写真を必ずご確認の上ご購入ください。細かな見落としがある場合がございます。`;
+  const state = `【状態】\n${CONDITION_LABELS[p.condition] || 'やや傷や汚れあり'}\n${stateContent}`;
   // ジャンク品の場合はNOTICE_TEXTを省略
   const notice = p.isJunk ? '' : (customNotice || DEFAULT_NOTICE_TEXT);
   return `${p.barcode || ''}\n\n${p.intro || ''}\n\n${spec}\n\n${acc}\n\n${state}${notice ? '\n\n' + notice : ''}`;
