@@ -1351,6 +1351,7 @@ const DropZone = ({ title, icon, color, accept, multiple, directory, onFiles, hi
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
+  const addImagesRef = useRef(null);
   const dragCounter = useRef(0);
   
   const handleDragIn = (e) => {
@@ -1744,6 +1745,8 @@ function App() {
   const [sorterSelected, setSorterSelected] = useState(-1);
   const [sorterPreview, setSorterPreview] = useState(null);
   const [showBcReview, setShowBcReview] = useState(false);
+  const [showImageReloadDialog, setShowImageReloadDialog] = useState(false);
+  const [pendingClassify, setPendingClassify] = useState(false);
   const [bcReviewReady, setBcReviewReady] = useState(false);
   const [bcReviewIdx, setBcReviewIdx] = useState(0);
 
@@ -1816,70 +1819,60 @@ function App() {
     if (step < 2 || products.length === 0) return;
     clearTimeout(autoSaveRef.current);
     autoSaveRef.current = setTimeout(async () => {
-      // 軽量版: 画像データを除外
-      const lightProducts = products.map(p => ({
-        ...p,
-        images: p.images.map(img => ({
-          id: img.id, filename: img.filename, category: img.category,
-          isBarcode: img.isBarcode, excluded: img.excluded,
-          // dataUrl/thumbUrlは除外（復元時に再読込が必要）
-        }))
-      }));
-      const ok = await idbSave({ step, currentIdx, products: lightProducts, savedAt: new Date().toISOString(), version: '5.1', lightMode: true });
+      // 画像込みフル保存（IndexedDBは大容量OK）
+      const ok = await idbSave({ step, currentIdx, products, savedAt: new Date().toISOString(), version: '5.1', lightMode: false });
       if (ok) setAutoSaveTime(new Date());
-    }, 3000); // 3秒デバウンス（lightModeで軽量なので高頻度OK）
+    }, 5000); // 5秒デバウンス（画像込みのため少し長め）
     return () => clearTimeout(autoSaveRef.current);
   }, [step, products]);
 
   // 復元実行
   const restoreSession = () => {
     if (!pendingRestore) return;
-    const isLight = pendingRestore.lightMode;
-    setProducts(pendingRestore.products);
-    setStep(Math.max(pendingRestore.step || 2, isLight ? 3 : 2)); // lightModeならStep3以降に強制
-    setCurrentIdx(Math.min(pendingRestore.currentIdx || 0, pendingRestore.products.length - 1));
-    setMessage(`✅ 自動保存から復元: ${pendingRestore.products.length}商品（Step ${pendingRestore.step || 2}）/ ${pendingRestore.savedAt ? new Date(pendingRestore.savedAt).toLocaleString() : ''}${isLight ? ' ⚠️画像なし（スペック・価格・タイトルのみ）' : ''}`);
+    const prods = pendingRestore.products;
+    const hasImages = prods.some(p => p.images?.some(img => img.dataUrl));
+    setProducts(prods);
+    setCurrentIdx(Math.min(pendingRestore.currentIdx || 0, prods.length - 1));
     setPendingRestore(null);
+    if (hasImages) {
+      setStep(pendingRestore.step || 2);
+      setMessage(`✅ 自動保存から復元: ${prods.length}商品（Step ${pendingRestore.step || 2}）/ ${pendingRestore.savedAt ? new Date(pendingRestore.savedAt).toLocaleString() : ''}`);
+    } else {
+      setStep(Math.max(pendingRestore.step || 2, 3));
+      setShowImageReloadDialog(true);
+    }
   };
 
   // 手動保存（JSONダウンロード）
   const manualSave = async () => {
-    const lightProducts = products.map(p => ({
-      ...p,
-      images: p.images.map(img => ({
-        id: img.id, filename: img.filename, category: img.category,
-        isBarcode: img.isBarcode, excluded: img.excluded,
-      }))
-    }));
-    await idbSave({ step, currentIdx, products: lightProducts, savedAt: new Date().toISOString(), version: '5.1', lightMode: true });
+    await idbSave({ step, currentIdx, products, savedAt: new Date().toISOString(), version: '5.1', lightMode: false });
     setAutoSaveTime(new Date());
     setMessage(`💾 手動保存しました（${products.length}商品, Step ${step}）`);
   };
 
   // 画像復元: フォルダを再選択してfilename照合で画像を紐付け直す
-  const reloadImagesFromFolder = async () => {
+  const reloadImagesFromFolder = async (runClassifyAfter = false) => {
     try {
       const dirHandle = await window.showDirectoryPicker({ mode: 'read' });
       setLoading(true);
       setMessage('📁 画像を再読み込み中...');
       let restored = 0, total = 0;
       const np = [...products];
+      const matchedFolders = new Set();
       
       for (let pi = 0; pi < np.length; pi++) {
         const p = np[pi];
         if (!p.images || p.images.length === 0) continue;
-        // フォルダ名でサブディレクトリを探す
         let subDir = null;
         try { subDir = await dirHandle.getDirectoryHandle(p.folder); } catch(e) {}
         if (!subDir) continue;
+        matchedFolders.add(p.folder);
         
-        // サブディレクトリ内のファイルをマップ化
         const fileMap = {};
         for await (const [name, handle] of subDir.entries()) {
           if (handle.kind === 'file') fileMap[name] = handle;
         }
         
-        // 各画像のfilenameで照合
         const newImages = [];
         for (const img of p.images) {
           total++;
@@ -1896,7 +1889,7 @@ function App() {
               newImages.push({ ...img, dataUrl, thumbUrl: dataUrl });
               restored++;
             } catch(e) {
-              newImages.push(img); // 読めなかった場合はそのまま
+              newImages.push(img);
             }
           } else {
             newImages.push(img);
@@ -1909,9 +1902,48 @@ function App() {
           await new Promise(r => setTimeout(r, 10));
         }
       }
+      
+      // 削除済み商品の検出: フォルダにあるが復元データに無いもの
+      let deletedCount = 0;
+      for await (const [name, handle] of dirHandle.entries()) {
+        if (handle.kind !== 'directory' || matchedFolders.has(name)) continue;
+        // 未マッチフォルダ → 削除済み商品として追加
+        const imgs = [];
+        const subDir = await dirHandle.getDirectoryHandle(name);
+        for await (const [fname, fhandle] of subDir.entries()) {
+          if (fhandle.kind !== 'file' || !/\.(jpe?g|png|webp|gif)$/i.test(fname)) continue;
+          try {
+            const file = await fhandle.getFile();
+            const dataUrl = await new Promise((res, rej) => {
+              const r = new FileReader();
+              r.onload = () => res(r.result);
+              r.onerror = rej;
+              r.readAsDataURL(file);
+            });
+            imgs.push({ id: `${name}_${fname}`, filename: fname, dataUrl, thumbUrl: dataUrl, excluded: false });
+          } catch(e) {}
+        }
+        if (imgs.length > 0) {
+          np.push({
+            id: name, folder: name,
+            images: imgs.sort((a, b) => a.filename.localeCompare(b.filename)),
+            barcode: null, status: 'deleted_from_original',
+            deletedNote: 'これは元のデータで消されています',
+          });
+          deletedCount++;
+        }
+      }
+      
       setProducts(np);
       setLoading(false);
-      setMessage(`✅ 画像復元完了: ${restored}/${total}枚`);
+      let msg = `✅ 画像復元完了: ${restored}/${total}枚`;
+      if (deletedCount > 0) msg += ` / ⚠️ 削除済み ${deletedCount}件を末尾に追加`;
+      setMessage(msg);
+      
+      if (runClassifyAfter || confirm('画像処理（分類・並替・BC読取）を実行しますか？\n※スペック・価格・タイトルは維持されます')) {
+        setStep(2);
+        setPendingClassify(true);
+      }
     } catch(e) {
       if (e.name !== 'AbortError') console.error('画像復元エラー:', e);
       setLoading(false);
@@ -2846,6 +2878,14 @@ function App() {
     setBcReviewReady(true);
   };
 
+  // 画像復元後の自動分類トリガー
+  useEffect(() => {
+    if (pendingClassify && step === 2 && products.length > 0 && !loading) {
+      setPendingClassify(false);
+      aiReprocess();
+    }
+  }, [pendingClassify, step, products, loading]);
+
   // OCR
   // バーコード画像を見つけるヘルパー
   const findBarcodeImage = (p) => {
@@ -3089,9 +3129,8 @@ function App() {
     const matched = np.filter(x => x.status === 'ok').length;
     setMessage(`✅ 照合完了: ${matched}/${np.length}件マッチ`);
     setStep(3);
-    // 即座にIDB保存（state更新を待たず直接npを保存）
-    const lightNp = np.map(p => ({ ...p, images: p.images.map(img => ({ id: img.id, filename: img.filename, category: img.category, isBarcode: img.isBarcode, excluded: img.excluded })) }));
-    idbSave({ step: 3, currentIdx, products: lightNp, savedAt: new Date().toISOString(), version: '5.1', lightMode: true });
+    // 即座にIDB保存（画像込み）
+    idbSave({ step: 3, currentIdx, products: np, savedAt: new Date().toISOString(), version: '5.1', lightMode: false });
   };
 
   // データ処理（フル: OCR/AI型番/Mac判定/紹介文含む）
@@ -3280,9 +3319,8 @@ function App() {
     setStep(3);
     setLoading(false);
     setMessage('');
-    // 即座にIDB保存
-    const lightNp = np.map(p => ({ ...p, images: p.images.map(img => ({ id: img.id, filename: img.filename, category: img.category, isBarcode: img.isBarcode, excluded: img.excluded })) }));
-    idbSave({ step: 3, currentIdx, products: lightNp, savedAt: new Date().toISOString(), version: '5.1', lightMode: true });
+    // 即座にIDB保存（画像込み）
+    idbSave({ step: 3, currentIdx, products: np, savedAt: new Date().toISOString(), version: '5.1', lightMode: false });
     } catch(e) {
       console.error('processProducts error:', e);
       setLoading(false);
@@ -3499,11 +3537,16 @@ function App() {
       try {
         const data = JSON.parse(ev.target.result);
         if (data.products) {
+          const hasImages = data.products.some(p => p.images?.some(img => img.dataUrl));
           setProducts(data.products);
-          const isLight = data.lightMode || data.products.some(p => p.images?.length > 0 && !p.images[0]?.dataUrl);
-          setStep(Math.max(data.step || 2, isLight ? 3 : 2));
+          setStep(Math.max(data.step || 2, !hasImages ? 3 : 2));
           setCurrentIdx(Math.min(data.currentIdx || 0, data.products.length - 1));
-          setMessage(`📂 セッション復元: ${data.products.length}商品（Step ${data.step || 2}）${data.savedAt ? ' / 保存日時: ' + new Date(data.savedAt).toLocaleString() : ''}${isLight ? ' ⚠️画像なし→「📁 画像復元」で再読み込み' : ''}`);
+          if (!hasImages) {
+            setMessage(`📂 セッション復元: ${data.products.length}商品 ⚠️ 画像なし`);
+            setShowImageReloadDialog(true);
+          } else {
+            setMessage(`📂 セッション復元: ${data.products.length}商品（Step ${data.step || 2}）${data.savedAt ? ' / ' + new Date(data.savedAt).toLocaleString() : ''}`);
+          }
         }
       } catch (err) { setMessage('❌ セッションファイルの読込失敗'); }
     };
@@ -3698,6 +3741,7 @@ function App() {
                   <button onClick={() => { setCurrentIdx(Math.min(products.length-1, currentIdx+1)); setImageHistory([]); setSelectedImages([]); }} disabled={currentIdx===products.length-1} className="p-1.5 rounded-lg hover:bg-white disabled:opacity-30 transition"><Icon name="right"/></button>
                 </div>
                 <span className="text-gray-600 font-medium">{cur.folder}</span>
+                {cur.deletedNote && <span className="bg-red-100 text-red-600 px-2 py-0.5 rounded text-xs font-bold">🗑 {cur.deletedNote}</span>}
                 {cur.barcode && <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded text-sm font-mono">{cur.barcode}</span>}
               </div>
               <div className="flex items-center gap-3">
@@ -3766,6 +3810,32 @@ function App() {
                 }} className="px-3 py-1.5 bg-cyan-500 text-white rounded text-sm hover:bg-cyan-600 font-medium" title="選択した画像をバーコード画像に指定/解除">
                   🏷 BC切替
                 </button>
+                <button onClick={() => addImagesRef.current?.click()} disabled={loading} className="px-3 py-1.5 bg-teal-500 text-white rounded text-sm hover:bg-teal-600 disabled:opacity-50 font-medium" title="現在の商品に画像を追加">
+                  ➕ 画像追加
+                </button>
+                <input ref={addImagesRef} type="file" accept="image/*" multiple className="hidden" onChange={async (e) => {
+                  const files = Array.from(e.target.files || []);
+                  if (files.length === 0) return;
+                  const np = [...products];
+                  const p = np[currentIdx];
+                  for (const file of files) {
+                    const dataUrl = await new Promise((res, rej) => {
+                      const r = new FileReader();
+                      r.onload = () => res(r.result);
+                      r.onerror = rej;
+                      r.readAsDataURL(file);
+                    });
+                    const lastExcludedIdx = p.images.findIndex(img => img.excluded);
+                    const insertIdx = lastExcludedIdx >= 0 ? lastExcludedIdx : p.images.length;
+                    p.images.splice(insertIdx, 0, {
+                      id: `${p.folder}_add_${Date.now()}_${file.name}`,
+                      filename: file.name, dataUrl, thumbUrl: dataUrl, excluded: false,
+                    });
+                  }
+                  setProducts(np);
+                  setMessage(`➕ ${files.length}枚追加しました`);
+                  e.target.value = '';
+                }} />
                 <button onClick={saveAllImages} disabled={loading} className="px-3 py-1.5 bg-green-500 text-white rounded text-sm hover:bg-green-600 disabled:opacity-50 font-medium" title="全商品の画像を保存">
                   💾 画像DL
                 </button>
@@ -3834,7 +3904,7 @@ function App() {
                       {firstImg && <img src={firstImg.thumbUrl || firstImg.dataUrl} className="w-full h-full object-cover"/>}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="truncate text-xs font-medium">{p.folder}</div>
+                      <div className="truncate text-xs font-medium">{p.folder}{p.deletedNote && <span className="ml-1 text-red-400">🗑</span>}</div>
                       <div className={`text-xs flex items-center gap-1 ${isCurrent ? 'text-blue-200' : 'text-gray-400'}`}>
                         {p.barcode ? <span className="text-green-500">✓</span> : <span className="text-red-400">✗</span>}
                         <span className={pUpload > 10 ? (isCurrent ? 'text-yellow-200' : 'text-red-500 font-bold') : ''}>{pUpload}枚</span>
@@ -4624,6 +4694,39 @@ function App() {
         </div>
       )}
 
+      {/* 画像復元ダイアログ */}
+      {showImageReloadDialog && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md mx-4">
+            <h3 className="text-lg font-bold mb-2">⚠️ 画像データがありません</h3>
+            <p className="text-gray-600 text-sm mb-4">
+              作業データは復元されましたが、画像が含まれていません。<br/>
+              PC写真のフォルダがある場合は読み込んで画像処理を行います。
+            </p>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => {
+                  setShowImageReloadDialog(false);
+                  reloadImagesFromFolder(true);
+                }}
+                className="w-full px-4 py-3 bg-blue-500 text-white rounded-lg font-bold hover:bg-blue-600 text-sm"
+              >
+                📁 画像を読み込む（分類・並替を実行）
+              </button>
+              <button
+                onClick={() => {
+                  setShowImageReloadDialog(false);
+                  setMessage(`✅ 復元完了: ${products.length}商品（画像なし）`);
+                }}
+                className="w-full px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm"
+              >
+                画像なしで続行
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 画像拡大・モザイクモーダル */}
       {zoomImage && React.createElement(MosaicEditor, {
         key: zoomImage.dataUrl,
@@ -4727,6 +4830,34 @@ function App() {
           </div>
         );
       })()}
+
+      {/* 画像復元ダイアログ */}
+      {showImageReloadDialog && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-2xl p-6 max-w-md mx-4">
+            <h3 className="text-lg font-bold mb-3">⚠️ 画像データがありません</h3>
+            <p className="text-gray-600 mb-4 text-sm">
+              スペック・価格・タイトルは復元済みです。<br/>
+              画像フォルダを選択して再読み込みしますか？<br/>
+              <span className="text-gray-400">（読み込み後、分類・並替・BC読取を自動実行します）</span>
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => { setShowImageReloadDialog(false); }}
+                className="px-4 py-2 text-gray-500 hover:text-gray-700 text-sm"
+              >
+                あとで
+              </button>
+              <button
+                onClick={() => { setShowImageReloadDialog(false); reloadImagesFromFolder(true); }}
+                className="px-5 py-2 bg-blue-500 text-white rounded-lg font-bold hover:bg-blue-600"
+              >
+                📁 フォルダ選択して復元
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* バーコード検査モーダル */}
       {showBcReview && (() => {
