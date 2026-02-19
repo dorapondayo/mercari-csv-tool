@@ -729,7 +729,7 @@ const makeDescription = (p, customNotice) => {
   const spec = '【スペック】\n' + lines.join('\n');
   const acc = `【付属品】\n${(p.accessories || []).join('、')}`;
   // ジャンク品の場合は専用テキスト、通常はconditionNotesのみ（CSV瑕疵の生テキストは出さない）
-  const stateContent = p.isJunk ? JUNK_STATE_TEXT : (p.conditionNotes || '使用に伴う多少のスレがあります。');
+  const stateContent = p.isJunk ? JUNK_STATE_TEXT : (p.conditionNotes || '中古品なりの使用感はありますが、美品となります。');
   const state = `【状態】\n${CONDITION_LABELS[p.condition] || 'やや傷や汚れあり'}\n${stateContent}`;
   // ジャンク品の場合はNOTICE_TEXTを省略
   const notice = p.isJunk ? '' : (customNotice || DEFAULT_NOTICE_TEXT);
@@ -960,7 +960,7 @@ const ocrBarcode = async (key, dataUrl) => {
 
 // スペック画像からPC情報を抽出（バーコード無し時に使用）
 const ocrSpecs = async (key, images, needMakerID = false) => {
-  // info/spec画像を最大3枚送信。categoryなし時はバーコード以外の画像から選択
+  // info画像を最大3枚送信。categoryなし時はバーコード以外の画像から選択（旧specも含む）
   let targets = images.filter(img => !img.excluded && (img.category === 'info' || img.category === 'spec')).slice(0, 3);
   if (targets.length === 0) {
     targets = images.filter(img => !img.excluded && !img.isBarcode && img.category !== 'barcode').slice(0, 3);
@@ -1042,22 +1042,22 @@ const classifyImages = async (claudeKey, images) => {
 
 ■判定フロー（上から順に判定、最初に該当したものが答え）:
 1. バーコード（縦線＋数字列）が写っている？ → barcode
-2. PCが閉じた状態？（天板/ロゴ面/側面ポート/底面が見える）→ side
-3. PCが開いた全体写真？（画面とキーボード両方見える）→ main
-4. キーボード面のアップ？（キーが画面の半分以上）→ keyboard
-5. 画面にスペック文字が読める？（CPU名/RAM/OS/バッテリー数値）→ info
-6. 本体に貼られたラベル/シールのアップ？ → spec
-7. どれにも該当しない → other
+2. PCの画面にスペック情報が表示されている？（Battery report/CYCLE COUNT/システム情報/CPU名/RAM/OS等）→ info
+3. PCが閉じた状態？（天板/ロゴ面/側面ポート/底面が見える）→ side
+4. PCが開いた全体写真？（画面とキーボード両方見える）→ main
+5. キーボード面のアップ？（キーが画面の半分以上）→ keyboard
+6. どれにも該当しない → other
 
 ■補足ルール:
 ・同じカテゴリが何枚あってもOK。バランスを取る必要はない。side6枚は普通
+・infoは「PCの画面（ディスプレイ）に表示された文字」のみ。本体ラベル/シールはinfoではない
 ・暗い画面でもテキスト（Battery report/CYCLE COUNT等）が読めればinfo
-・キーボードにシールが見えてもキーが主体ならkeyboard（specではない）
-・底面のラベルは小さければside（ラベルのアップならspec）
+・キーボードにシールや紙が見えてもキーが主体ならkeyboard
+・底面ラベル/シールが見える → side（ラベルのアップでもside）
 
 ■状態判定:
 condition: 3がデフォルト。画面色むら/筐体割れ/キー欠損/ヒンジ破損のみ4-5。
-notes: デフォルト「中古品なりの使用感はありますが、美品となります。」
+notes: condition 4-5の場合のみ具体的な問題点を記載（例:「画面に色むらがあります」）。condition 3の場合はnotesは空文字""。
 
 JSON出力（JSONのみ、他のテキスト不要）:
 {"results":[{"index":0,"category":"main"},{"index":1,"category":"info","info_text":"読めたテキスト"},...], "condition":3, "notes":"..."}
@@ -1662,6 +1662,35 @@ const idbClear = async () => {
     db.close();
   } catch(e) {}
 };
+// IndexedDB汎用キー別保存/読込（仕入・価格・Shopsデータ用）
+const idbSaveKey = async (key, data) => {
+  try {
+    const db = await idbOpen();
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put(data, key);
+    await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = rej; });
+    db.close();
+    return true;
+  } catch(e) { console.error(`IDB save error (${key}):`, e); return false; }
+};
+const idbLoadKey = async (key) => {
+  try {
+    const db = await idbOpen();
+    const tx = db.transaction(IDB_STORE, 'readonly');
+    const req = tx.objectStore(IDB_STORE).get(key);
+    const result = await new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = rej; });
+    db.close();
+    return result || null;
+  } catch(e) { console.error(`IDB load error (${key}):`, e); return null; }
+};
+const idbDeleteKey = async (key) => {
+  try {
+    const db = await idbOpen();
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).delete(key);
+    db.close();
+  } catch(e) {}
+};
 
 // メインApp
 function App() {
@@ -1718,62 +1747,55 @@ function App() {
   const [bcReviewReady, setBcReviewReady] = useState(false);
   const [bcReviewIdx, setBcReviewIdx] = useState(0);
 
-  // 初期ロード時にlocalStorageから復元
+  // 初期ロード時にIndexedDBから復元（localStorage→IDB移行対応）
   useEffect(() => {
-    try {
-      const savedPurchase = localStorage.getItem('mercari_purchase_data');
-      const savedPrice = localStorage.getItem('mercari_price_data');
-      if (savedPurchase) {
-        const data = JSON.parse(savedPurchase);
-        setPurchaseData(data);
-        console.log(`仕入データ復元: ${data.length}件`);
+    (async () => {
+      try {
+        // IDBから読み込み（優先）、なければlocalStorageからマイグレーション
+        let purchase = await idbLoadKey('purchase_data');
+        if (!purchase) {
+          const ls = localStorage.getItem('mercari_purchase_data');
+          if (ls) { purchase = JSON.parse(ls); localStorage.removeItem('mercari_purchase_data'); }
+        }
+        if (purchase && purchase.length > 0) { setPurchaseData(purchase); console.log(`仕入データ復元: ${purchase.length}件`); }
+
+        let price = await idbLoadKey('price_data');
+        if (!price) {
+          const ls = localStorage.getItem('mercari_price_data');
+          if (ls) { price = JSON.parse(ls); localStorage.removeItem('mercari_price_data'); }
+        }
+        if (price && price.length > 0) { setPriceData(price); console.log(`価格データ復元: ${price.length}件`); }
+
+        let shops = await idbLoadKey('shops_data');
+        if (!shops) {
+          const ls = localStorage.getItem('mercari_shops_data');
+          if (ls) { shops = JSON.parse(ls); localStorage.removeItem('mercari_shops_data'); }
+        }
+        if (shops && shops.length > 0) { setShopsData(shops); console.log(`Shopsデータ復元: ${shops.length}件`); }
+      } catch (e) {
+        console.error('データ復元エラー:', e);
       }
-      if (savedPrice) {
-        const data = JSON.parse(savedPrice);
-        setPriceData(data);
-        console.log(`価格データ復元: ${data.length}件`);
-      }
-      const savedShops = localStorage.getItem('mercari_shops_data');
-      if (savedShops) {
-        const data = JSON.parse(savedShops);
-        setShopsData(data);
-        console.log(`Shopsデータ復元: ${data.length}件`);
-      }
-    } catch (e) {
-      console.error('データ復元エラー:', e);
-    }
+    })();
   }, []);
 
-  // 仕入データ変更時に保存（500件以下のみ、超過時はセッション内のみ保持）
+  // 仕入データ変更時にIDB保存（容量制限なし）
   useEffect(() => {
-    if (purchaseData.length > 0 && purchaseData.length <= 500) {
-      try {
-        localStorage.setItem('mercari_purchase_data', JSON.stringify(purchaseData));
-      } catch (e) { /* quota exceeded */ }
-    } else if (purchaseData.length > 500) {
-      localStorage.removeItem('mercari_purchase_data');
+    if (purchaseData.length > 0) {
+      idbSaveKey('purchase_data', purchaseData);
     }
   }, [purchaseData]);
 
-  // 価格データ変更時に保存
+  // 価格データ変更時にIDB保存
   useEffect(() => {
-    if (priceData.length > 0 && priceData.length <= 500) {
-      try {
-        localStorage.setItem('mercari_price_data', JSON.stringify(priceData));
-      } catch (e) { /* quota exceeded */ }
-    } else if (priceData.length > 500) {
-      localStorage.removeItem('mercari_price_data');
+    if (priceData.length > 0) {
+      idbSaveKey('price_data', priceData);
     }
   }, [priceData]);
 
-  // Shopsデータ変更時に保存
+  // Shopsデータ変更時にIDB保存
   useEffect(() => {
-    if (shopsData.length > 0 && shopsData.length <= 1000) {
-      try {
-        localStorage.setItem('mercari_shops_data', JSON.stringify(shopsData));
-      } catch (e) { /* quota exceeded */ }
-    } else if (shopsData.length > 1000) {
-      localStorage.removeItem('mercari_shops_data');
+    if (shopsData.length > 0) {
+      idbSaveKey('shops_data', shopsData);
     }
   }, [shopsData]);
 
@@ -1905,6 +1927,9 @@ function App() {
       localStorage.removeItem('mercari_shops_data');
       localStorage.removeItem('model_map_learned');
       idbClear();
+      idbDeleteKey('purchase_data');
+      idbDeleteKey('price_data');
+      idbDeleteKey('shops_data');
       setPurchaseData([]);
       setPriceData([]);
       setShopsData([]);
@@ -1921,8 +1946,12 @@ function App() {
     if (openaiKey) localStorage.setItem('openai_key', openaiKey);
     if (claudeKeyVal) localStorage.setItem('claude_key', claudeKeyVal);
     idbClear();
+    idbDeleteKey('purchase_data');
+    idbDeleteKey('price_data');
+    idbDeleteKey('shops_data');
     setPurchaseData([]);
     setPriceData([]);
+    setShopsData([]);
     setAutoSaveTime(null);
     setMessage('✅ キャッシュクリア完了（APIキーは保持）');
   };
@@ -2020,7 +2049,16 @@ function App() {
       const reader = new FileReader();
       reader.onload = (ev) => {
         try {
-          const wb = XLSX.read(new Uint8Array(ev.target.result), { type: 'array' });
+          const arr = new Uint8Array(ev.target.result);
+          let wb;
+          if (f.name.endsWith('.csv') || f.name.endsWith('.tsv')) {
+            // CSVはcp932の可能性があるのでTextDecoderで先にデコード
+            let text;
+            try { text = new TextDecoder('shift_jis').decode(arr); } catch { text = new TextDecoder('utf-8').decode(arr); }
+            wb = XLSX.read(text, { type: 'string' });
+          } else {
+            wb = XLSX.read(arr, { type: 'array' });
+          }
           const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
           // 必要列のみ抽出（163列→3列、メモリ・localStorage節約）
           json.forEach(r => {
@@ -2322,12 +2360,12 @@ function App() {
           const p = prods[i];
           // OCR
           const allActive = p.images.filter(img => !img.excluded);
-          const bcImg = allActive[allActive.length - 1];
-          if (bcImg && !p.barcode) {
+          const bcImgGuess = allActive[allActive.length - 1];
+          if (bcImgGuess && !p.barcode) {
             try {
               setMessage(`📷 BC読取 ${i+1}/${prods.length}`);
-              const bc = await ocrBarcode(apiKey, bcImg.dataUrl);
-              if (bc) { p.barcode = bc; bcImg.isBarcode = true; }
+              const bc = await ocrBarcode(apiKey, bcImgGuess.dataUrl);
+              if (bc) { p.barcode = bc; } // isBarcode付与は分類結果に任せる
             } catch(e) { console.error('OCRエラー:', e); }
           }
           // 画像分類＆並替
@@ -2338,12 +2376,12 @@ function App() {
               if (classResult) {
                 const { results: classifications, condition, notes } = classResult;
                 p.condition = condition || 3;
-                p.conditionNotes = notes || '';
-                const byCategory = { main: [], keyboard: [], side: [], info: [], spec: [], barcode: [], other: [] };
+                p.conditionNotes = (condition && condition >= 4 && notes) ? notes : '';
+                const byCategory = { main: [], keyboard: [], side: [], info: [], barcode: [], other: [] };
                 classifications.forEach(c => {
                   const img = allActive[c.index];
                   if (!img) return;
-                  const cat = (c.category === 'screen' || c.category === 'battery') ? 'info' : c.category;
+                  const cat = (c.category === 'screen' || c.category === 'battery' || c.category === 'spec') ? 'info' : c.category;
                   img.category = byCategory[cat] ? cat : 'other';
                   if (byCategory[cat]) byCategory[cat].push(img);
                   else byCategory.other.push(img);
@@ -2357,13 +2395,11 @@ function App() {
                     imgs.forEach(img => mergedSrcIds.add(img.id));
                   } else { sorted.push(...imgs); }
                 };
-                // main(2) → info(結合) → spec(結合) → keyboard(結合) → side(結合) → other
+                // main(2) → info(結合) → keyboard(結合) → side(結合) → other
                 sorted.push(...byCategory.main.slice(0, 2));
                 if (byCategory.main.length > 2) byCategory.other.push(...byCategory.main.slice(2));
                 if (byCategory.info.length >= 2) { await mergeAndPush(byCategory.info.slice(0, 4), 'info'); if (byCategory.info.length > 4) byCategory.other.push(...byCategory.info.slice(4)); }
                 else { sorted.push(...byCategory.info); }
-                if (byCategory.spec.length >= 2) { await mergeAndPush(byCategory.spec.slice(0, 4), 'spec'); if (byCategory.spec.length > 4) byCategory.other.push(...byCategory.spec.slice(4)); }
-                else { sorted.push(...byCategory.spec); }
                 if (byCategory.keyboard.length >= 2) { await mergeAndPush(byCategory.keyboard.slice(0, 4), 'keyboard'); if (byCategory.keyboard.length > 4) byCategory.other.push(...byCategory.keyboard.slice(4)); }
                 else { sorted.push(...byCategory.keyboard); }
                 if (byCategory.side.length >= 2) {
@@ -2373,6 +2409,22 @@ function App() {
                 sorted.push(...byCategory.other);
                 byCategory.barcode.forEach(img => img.isBarcode = true);
                 sorted.push(...byCategory.barcode);
+
+                // BC補正: barcode=0枚かつinfo画像がある場合、infoでOCR試行→読めたらbarcodeに変更
+                if (byCategory.barcode.length === 0 && byCategory.info.length > 0 && apiKey && !p.barcode) {
+                  for (const infoImg of byCategory.info) {
+                    try {
+                      const bc = await ocrBarcode(apiKey, infoImg.dataUrl);
+                      if (bc) {
+                        infoImg.isBarcode = true;
+                        infoImg.category = 'barcode';
+                        p.barcode = bc;
+                        console.log(`🔄 INFO→BC補正: ${p.folder} (${bc})`);
+                        break;
+                      }
+                    } catch(e) {}
+                  }
+                }
 
                 const excludedImgs = p.images.filter(img => img.excluded || mergedSrcIds.has(img.id)).map(img => ({ ...img, excluded: true }));
                 p.images = [...sorted, ...excludedImgs];
@@ -2498,7 +2550,7 @@ function App() {
         
         // OCR
         const allActive = p.images.filter(img => !img.excluded);
-        const bcImg = allActive.find(img => img.isBarcode) || allActive[allActive.length - 1];
+        const bcImg = allActive.find(img => img.isBarcode || img.category === 'barcode');
         if (bcImg && !p.barcode) {
           try {
             setMessage(`📷 BC読取 ${i+1}/${total} ${fmtEta(i, total, t0)}`);
@@ -2520,14 +2572,14 @@ function App() {
           
           const { results: classifications, condition, notes } = classResult;
           p.condition = condition || 3;
-          p.conditionNotes = notes || '';
+          p.conditionNotes = (condition && condition >= 4 && notes) ? notes : '';
           
-          const byCategory = { main: [], keyboard: [], side: [], info: [], spec: [], barcode: [], other: [] };
+          const byCategory = { main: [], keyboard: [], side: [], info: [], barcode: [], other: [] };
           classifications.forEach(c => {
             const img = allActive[c.index];
             if (!img) return;
             // screen/battery → info に統合
-            const cat = (c.category === 'screen' || c.category === 'battery') ? 'info' : c.category;
+            const cat = (c.category === 'screen' || c.category === 'battery' || c.category === 'spec') ? 'info' : c.category;
             img.category = byCategory[cat] ? cat : 'other';
             if (byCategory[cat]) byCategory[cat].push(img);
             else byCategory.other.push(img);
@@ -2543,13 +2595,11 @@ function App() {
             } else { sorted.push(...imgs); }
           };
           
-          // main(2) → info(結合) → spec(結合) → keyboard(結合) → side(結合) → other
+          // main(2) → info(結合) → keyboard(結合) → side(結合) → other
           sorted.push(...byCategory.main.slice(0, 2));
           if (byCategory.main.length > 2) byCategory.other.push(...byCategory.main.slice(2));
           if (byCategory.info.length >= 2) { await mergeAndPush(byCategory.info.slice(0, 4), 'info'); if (byCategory.info.length > 4) byCategory.other.push(...byCategory.info.slice(4)); }
           else { sorted.push(...byCategory.info); }
-          if (byCategory.spec.length >= 2) { await mergeAndPush(byCategory.spec.slice(0, 4), 'spec'); if (byCategory.spec.length > 4) byCategory.other.push(...byCategory.spec.slice(4)); }
-          else { sorted.push(...byCategory.spec); }
           if (byCategory.keyboard.length >= 2) { await mergeAndPush(byCategory.keyboard.slice(0, 4), 'keyboard'); if (byCategory.keyboard.length > 4) byCategory.other.push(...byCategory.keyboard.slice(4)); }
           else { sorted.push(...byCategory.keyboard); }
           if (byCategory.side.length >= 2) {
@@ -2559,6 +2609,22 @@ function App() {
           sorted.push(...byCategory.other);
           byCategory.barcode.forEach(img => img.isBarcode = true);
           sorted.push(...byCategory.barcode);
+
+          // BC補正: barcode=0枚かつinfo画像がある場合、infoでOCR試行
+          if (byCategory.barcode.length === 0 && byCategory.info.length > 0 && apiKey && !p.barcode) {
+            for (const infoImg of byCategory.info) {
+              try {
+                const bc = await ocrBarcode(apiKey, infoImg.dataUrl);
+                if (bc) {
+                  infoImg.isBarcode = true;
+                  infoImg.category = 'barcode';
+                  p.barcode = bc;
+                  console.log(`🔄 INFO→BC補正: ${p.folder} (${bc})`);
+                  break;
+                }
+              } catch(e) {}
+            }
+          }
 
           
           const excludedImgs = p.images.filter(img => img.excluded || mergedSrcIds.has(img.id)).map(img => ({ ...img, excluded: true }));
@@ -2620,7 +2686,7 @@ function App() {
       // 2. カテゴリ別に分類
       const active = restored.filter(img => !img.excluded);
       const excluded = restored.filter(img => img.excluded);
-      const byCategory = { main: [], keyboard: [], side: [], info: [], spec: [], barcode: [], other: [] };
+      const byCategory = { main: [], keyboard: [], side: [], info: [], barcode: [], other: [] };
       active.forEach(img => {
         const cat = img.category || 'other';
         if (byCategory[cat]) byCategory[cat].push(img);
@@ -2641,8 +2707,6 @@ function App() {
       if (byCategory.main.length > 2) byCategory.other.push(...byCategory.main.slice(2));
       if (byCategory.info.length >= 2) { await mergeAndPush(byCategory.info.slice(0, 4), 'info'); if (byCategory.info.length > 4) byCategory.other.push(...byCategory.info.slice(4)); }
       else { sorted.push(...byCategory.info); }
-      if (byCategory.spec.length >= 2) { await mergeAndPush(byCategory.spec.slice(0, 4), 'spec'); if (byCategory.spec.length > 4) byCategory.other.push(...byCategory.spec.slice(4)); }
-      else { sorted.push(...byCategory.spec); }
       if (byCategory.keyboard.length >= 2) { await mergeAndPush(byCategory.keyboard.slice(0, 4), 'keyboard'); if (byCategory.keyboard.length > 4) byCategory.other.push(...byCategory.keyboard.slice(4)); }
       else { sorted.push(...byCategory.keyboard); }
       if (byCategory.side.length >= 2) { await mergeAndPush(byCategory.side.slice(0, 4), 'side'); if (byCategory.side.length > 4) byCategory.other.push(...byCategory.side.slice(4)); }
@@ -2650,6 +2714,16 @@ function App() {
       sorted.push(...byCategory.other);
       byCategory.barcode.forEach(img => img.isBarcode = true);
       sorted.push(...byCategory.barcode);
+
+      // BC補正
+      if (byCategory.barcode.length === 0 && byCategory.info.length > 0 && apiKey && !np[idx].barcode) {
+        for (const infoImg of byCategory.info) {
+          try {
+            const bc = await ocrBarcode(apiKey, infoImg.dataUrl);
+            if (bc) { infoImg.isBarcode = true; infoImg.category = 'barcode'; np[idx].barcode = bc; break; }
+          } catch(e) {}
+        }
+      }
       
       const newExcluded = restored.filter(img => mergedSrcIds.has(img.id) || (img.excluded && !mergedSrcIds.has(img.id))).map(img => ({ ...img, excluded: true }));
       np[idx].images = [...sorted, ...newExcluded];
@@ -2687,7 +2761,7 @@ function App() {
       // OCR未完了
       if (!p.barcode) {
         const allActive = p.images.filter(img => !img.excluded);
-        const bcImg = allActive.find(img => img.isBarcode) || allActive[allActive.length - 1];
+        const bcImg = allActive.find(img => img.isBarcode || img.category === 'barcode');
         if (bcImg) {
           try {
             setMessage(`📷 BC再読取... ${i+1}/${total} ${fmtEta(processed, total, t0)}`);
@@ -2710,12 +2784,12 @@ function App() {
           if (classResult) {
             const { results: classifications, condition, notes } = classResult;
             p.condition = condition || 3;
-            p.conditionNotes = notes || '';
-            const byCategory = { main: [], keyboard: [], side: [], info: [], spec: [], barcode: [], other: [] };
+            p.conditionNotes = (condition && condition >= 4 && notes) ? notes : '';
+            const byCategory = { main: [], keyboard: [], side: [], info: [], barcode: [], other: [] };
             classifications.forEach(c => {
               const img = activeImgs[c.index];
               if (!img) return;
-              const cat = (c.category === 'screen' || c.category === 'battery') ? 'info' : c.category;
+              const cat = (c.category === 'screen' || c.category === 'battery' || c.category === 'spec') ? 'info' : c.category;
               img.category = byCategory[cat] ? cat : 'other';
               if (byCategory[cat]) byCategory[cat].push(img);
               else byCategory.other.push(img);
@@ -2729,13 +2803,11 @@ function App() {
                 imgs.forEach(img => mergedSrcIds.add(img.id));
               } else { sorted.push(...imgs); }
             };
-            // main(2) → info(結合) → spec(結合) → keyboard(結合) → side(結合) → other
+            // main(2) → info(結合) → keyboard(結合) → side(結合) → other
             sorted.push(...byCategory.main.slice(0, 2));
             if (byCategory.main.length > 2) byCategory.other.push(...byCategory.main.slice(2));
             if (byCategory.info.length >= 2) { await mergeAndPush(byCategory.info.slice(0, 4), 'info'); if (byCategory.info.length > 4) byCategory.other.push(...byCategory.info.slice(4)); }
             else { sorted.push(...byCategory.info); }
-            if (byCategory.spec.length >= 2) { await mergeAndPush(byCategory.spec.slice(0, 4), 'spec'); if (byCategory.spec.length > 4) byCategory.other.push(...byCategory.spec.slice(4)); }
-            else { sorted.push(...byCategory.spec); }
             if (byCategory.keyboard.length >= 2) { await mergeAndPush(byCategory.keyboard.slice(0, 4), 'keyboard'); if (byCategory.keyboard.length > 4) byCategory.other.push(...byCategory.keyboard.slice(4)); }
             else { sorted.push(...byCategory.keyboard); }
             if (byCategory.side.length >= 2) {
@@ -2745,6 +2817,16 @@ function App() {
             sorted.push(...byCategory.other);
             byCategory.barcode.forEach(img => img.isBarcode = true);
             sorted.push(...byCategory.barcode);
+
+            // BC補正
+            if (byCategory.barcode.length === 0 && byCategory.info.length > 0 && apiKey && !p.barcode) {
+              for (const infoImg of byCategory.info) {
+                try {
+                  const bc = await ocrBarcode(apiKey, infoImg.dataUrl);
+                  if (bc) { infoImg.isBarcode = true; infoImg.category = 'barcode'; p.barcode = bc; break; }
+                } catch(e) {}
+              }
+            }
 
             const excludedImgs = p.images.filter(img => img.excluded || mergedSrcIds.has(img.id)).map(img => ({ ...img, excluded: true }));
             p.images = [...sorted, ...excludedImgs];
@@ -2770,9 +2852,11 @@ function App() {
     // isBarcode フラグ付き画像を優先
     const bcImg = p.images.find(img => img.isBarcode && !img.excluded);
     if (bcImg) return bcImg;
-    // フラグなし→最後のactive画像
-    const active = p.images.filter(img => !img.excluded);
-    return active[active.length - 1] || p.images[p.images.length - 1];
+    // category=barcodeの画像
+    const catBc = p.images.find(img => img.category === 'barcode' && !img.excluded);
+    if (catBc) return catBc;
+    // BC写真なし → null（無理に割り当てない）
+    return null;
   };
 
   const doOcr = async (idx) => {
@@ -3277,10 +3361,7 @@ function App() {
       setMessage(`📁 保存中... ${pi + 1}/${okProducts.length} (${p.barcode || p.folder})`);
       try {
         const allActive = p.images.filter(img => !img.excluded);
-        const hasBcFlag = allActive.some(img => img.isBarcode);
-        const activeImgs = hasBcFlag 
-          ? allActive.filter(img => !img.isBarcode)
-          : allActive.slice(0, -1);
+        const activeImgs = allActive.filter(img => !img.isBarcode && img.category !== 'barcode');
         for (let i = 0; i < Math.min(activeImgs.length, 20); i++) {
           const fname = makeImageFilename(p, activeImgs[i], i);
           await saveImageToFolder(dir, fname, activeImgs[i].dataUrl);
@@ -3312,10 +3393,7 @@ function App() {
     const rows = okProducts.map(p => {
       // 画像ファイル名（バーコード画像除く、元のファイル名をそのまま使用、最大20枚）
       const allActive = p.images.filter(img => !img.excluded);
-      const hasBcFlag = allActive.some(img => img.isBarcode);
-      const productImgs = hasBcFlag 
-        ? allActive.filter(img => !img.isBarcode)
-        : allActive.slice(0, -1);
+      const productImgs = allActive.filter(img => !img.isBarcode && img.category !== 'barcode');
       const imgs = productImgs
         .slice(0, 20)
         .map((img, i) => makeImageFilename(p, img, i));
@@ -3467,6 +3545,9 @@ function App() {
           {products.length > 0 && (
             <button onClick={reloadImagesFromFolder} disabled={loading} className="text-orange-500 hover:text-orange-700 text-xs font-bold disabled:opacity-50" title="フォルダから画像を再読み込み">📁 画像復元</button>
           )}
+          {products.length > 0 && (
+            <button onClick={saveAllImages} disabled={loading} className="text-green-600 hover:text-green-800 text-xs font-bold disabled:opacity-50" title="全商品の画像をフォルダに保存">💾 画像DL</button>
+          )}
           <label className="text-blue-500 hover:text-blue-700 text-xs cursor-pointer" title="JSONファイルから復元">
             📤 読込
             <input type="file" accept=".json" onChange={loadSession} className="hidden"/>
@@ -3495,11 +3576,12 @@ function App() {
         {step === 1 && (
           <div>
             {/* 保存データがある場合の表示 */}
-            {(purchaseData.length > 0 || priceData.length > 0) && (
+            {(purchaseData.length > 0 || priceData.length > 0 || shopsData.length > 0) && (
               <div className="bg-green-50 border border-green-200 rounded p-3 mb-4 text-sm">
                 <span className="font-medium text-green-700">💾 保存済みデータ: </span>
                 {purchaseData.length > 0 && <span className="mr-3">仕入CSV {purchaseData.length}件</span>}
                 {priceData.length > 0 && <span className="mr-3">価格データ {priceData.length}件</span>}
+                {shopsData.length > 0 && <span className="mr-3">Shops {shopsData.length}件</span>}
                 <span className="text-green-600 ml-2">（自動復元済み）</span>
               </div>
             )}
@@ -3588,7 +3670,7 @@ function App() {
           const excludedImages = cur.images.filter(img => img.excluded);
           const hasBcFlag = activeImages.some(img => img.isBarcode);
           // isBarcodeフラグ付き画像の数を除外、フラグなしなら最後の1枚をBC扱い
-          const bcCount = hasBcFlag ? activeImages.filter(img => img.isBarcode).length : (activeImages.length > 0 ? 1 : 0);
+          const bcCount = activeImages.filter(img => img.isBarcode || img.category === 'barcode').length;
           const uploadCount = activeImages.length - bcCount;
           
           // 履歴に保存する関数
@@ -3646,7 +3728,7 @@ function App() {
                   📸 出品: {uploadCount}枚 {uploadCount > 10 && '⚠️'}
                 </span>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <button onClick={doOcrAll} disabled={loading} className="px-3 py-1.5 bg-purple-500 text-white rounded text-sm hover:bg-purple-600 disabled:opacity-50 font-medium">
                   {loading ? '⏳ 処理中...' : '🔍 全OCR'}
                 </button>
@@ -3670,6 +3752,20 @@ function App() {
                     🔍 BC検査
                   </button>
                 )}
+                <button onClick={() => {
+                  if (selectedImages.length === 0) { setMessage('画像を選択してからBC切替してください'); return; }
+                  const np = [...products];
+                  const imgs = np[currentIdx].images;
+                  // 選択画像のBC状態を確認
+                  const anyBc = selectedImages.some(si => imgs[si]?.isBarcode);
+                  // 全解除 or 選択画像をBC指定（他は解除）
+                  imgs.forEach(img => img.isBarcode = false);
+                  if (!anyBc) selectedImages.forEach(si => { if (imgs[si]) imgs[si].isBarcode = true; });
+                  setProducts(np);
+                  setSelectedImages([]);
+                }} className="px-3 py-1.5 bg-cyan-500 text-white rounded text-sm hover:bg-cyan-600 font-medium" title="選択した画像をバーコード画像に指定/解除">
+                  🏷 BC切替
+                </button>
                 <button onClick={saveAllImages} disabled={loading} className="px-3 py-1.5 bg-green-500 text-white rounded text-sm hover:bg-green-600 disabled:opacity-50 font-medium" title="全商品の画像を保存">
                   💾 画像DL
                 </button>
@@ -3686,12 +3782,12 @@ function App() {
                   <option key={k} value={k}>{v}</option>
                 ))}
               </select>
-              <span className="text-sm text-gray-500 ml-2">メモ:</span>
+              <span className="text-sm text-gray-500 ml-2">目視した状態:</span>
               <input
                 type="text"
                 value={cur.conditionNotes || ''}
                 onChange={e => { const np = [...products]; np[currentIdx].conditionNotes = e.target.value; setProducts(np); }}
-                placeholder="例: 画面ムラあり、タッチパッド塗装はげ"
+                placeholder="空白→美品扱い / 例: 画面ムラあり、タッチパッド塗装はげ"
                 className="flex-1 border rounded px-2 py-1 text-sm"
               />
             </div>
@@ -3839,9 +3935,9 @@ function App() {
                     <span className="text-gray-300">|</span>
                     <button onClick={() => setSelectedImages([])} className="px-3 py-1 bg-gray-300 text-gray-700 rounded text-sm hover:bg-gray-400">✕ 解除</button>
                   </>) : (<>
-                    <span className="text-xs text-gray-400">💡 クリック:選択 / ダブルクリック:拡大 / ホバー:◀▶並替 / 左下バッジ:カテゴリ変更→🔀再並替</span>
+                    <span className="text-xs text-gray-400">💡 クリック:選択 / ダブルクリック:拡大 / 右クリック:BC切替 / ホバー:◀▶並替 / 左下バッジ:カテゴリ変更→🔀再並替</span>
                     <button onClick={() => {
-                      const allIdx = cur.images.map((img, i) => (!img.excluded && !(hasBcFlag ? img.isBarcode : activeImages.indexOf(img) === activeImages.length - 1)) ? i : null).filter(x => x !== null);
+                      const allIdx = cur.images.map((img, i) => (!img.excluded && !img.isBarcode && img.category !== 'barcode') ? i : null).filter(x => x !== null);
                       setSelectedImages(allIdx);
                     }} className="px-2 py-1 bg-blue-100 text-blue-600 rounded text-xs hover:bg-blue-200 font-medium">☑ 全選択</button>
                     {imageHistory.length > 0 && (
@@ -3855,12 +3951,12 @@ function App() {
                     {cur.images.map((img, i) => {
                       if (img.excluded) return null;
                       const activeIdx = activeImages.indexOf(img);
-                      const isBarcode = hasBcFlag ? !!img.isBarcode : (activeIdx === activeImages.length - 1);
+                      const isBarcode = !!img.isBarcode || img.category === 'barcode';
                       const isSelected = selectedImages.includes(i);
                       const displayNum = activeIdx + 1;
-                      const catColors = { main: 'bg-blue-500', keyboard: 'bg-cyan-500', side: 'bg-purple-500', info: 'bg-green-600', spec: 'bg-yellow-600', other: 'bg-gray-500' };
-                      const catLabels = { main: 'MAIN', keyboard: 'KEY', side: 'SIDE', info: 'INFO', spec: 'SPEC', other: '?' };
-                      const cats = ['main', 'info', 'spec', 'keyboard', 'side', 'other'];
+                      const catColors = { main: 'bg-blue-500', keyboard: 'bg-cyan-500', side: 'bg-purple-500', info: 'bg-green-600', other: 'bg-gray-500' };
+                      const catLabels = { main: 'MAIN', keyboard: 'KEY', side: 'SIDE', info: 'INFO', other: '?' };
+                      const cats = ['main', 'info', 'keyboard', 'side', 'other'];
                       return (
                         <div key={img.id} className="relative group"
                           onMouseEnter={() => setHoverImg(img.dataUrl)}
@@ -3873,6 +3969,7 @@ function App() {
                               else setSelectedImages([...selectedImages, i]);
                             }}
                             onDoubleClick={() => setZoomImage({dataUrl: img.dataUrl, imgIdx: i})}
+                            onContextMenu={e => { e.preventDefault(); const np = [...products]; const toggling = !img.isBarcode; if (toggling) np[currentIdx].images.forEach(im => im.isBarcode = false); np[currentIdx].images[i].isBarcode = toggling; setProducts(np); }}
                             className={`relative cursor-pointer transition-all ${isSelected ? 'ring-4 ring-blue-500 scale-105' : 'hover:ring-2 hover:ring-gray-400'} ${isBarcode ? 'ring-2 ring-red-400' : ''}`}
                           >
                             <img src={img.thumbUrl || img.dataUrl} className={`w-32 h-32 object-cover rounded border-2 ${isBarcode ? 'border-red-400' : isSelected ? 'border-blue-400' : 'border-gray-200'}`}/>
@@ -3899,7 +3996,7 @@ function App() {
                               {activeIdx > 0 && (
                                 <button onClick={e => { e.stopPropagation(); moveImage(i, cur.images.indexOf(activeImages[activeIdx - 1])); }} className="bg-gray-700 text-white text-xs px-1.5 py-0.5 rounded-l hover:bg-gray-900" title="左へ">◀</button>
                               )}
-                              {activeIdx < activeImages.length - (hasBcFlag ? 2 : 2) && (
+                              {activeIdx < activeImages.length - 1 && !isBarcode && (
                                 <button onClick={e => { e.stopPropagation(); moveImage(i, cur.images.indexOf(activeImages[activeIdx + 1])); }} className="bg-gray-700 text-white text-xs px-1.5 py-0.5 rounded-r hover:bg-gray-900" title="右へ">▶</button>
                               )}
                             </div>
@@ -4164,8 +4261,7 @@ function App() {
           const activeImgs = (() => {
             if (!cur) return [];
             const all = cur.images.filter(img => !img.excluded);
-            const hasBc = all.some(img => img.isBarcode);
-            return hasBc ? all.filter(img => !img.isBarcode) : all.slice(0, -1);
+            return all.filter(img => !img.isBarcode && img.category !== 'barcode');
           })();
           
           // 画像入れ替え関数
@@ -4176,7 +4272,7 @@ function App() {
             // activeImgsと同じロジックで実indexを取得
             const active = allImgs.filter(img => !img.excluded);
             const hasBc = active.some(img => img.isBarcode);
-            const displayed = hasBc ? active.filter(img => !img.isBarcode) : active.slice(0, -1);
+            const displayed = active.filter(img => !img.isBarcode && img.category !== 'barcode');
             const realFrom = allImgs.indexOf(displayed[fromDisplayIdx]);
             const realTo = allImgs.indexOf(displayed[toDisplayIdx]);
             if (realFrom < 0 || realTo < 0) return;
@@ -4551,9 +4647,9 @@ function App() {
         const p = products[currentIdx];
         if (!p) return null;
         const { mergedImgs } = decomposeTarget;
-        const catLabels = { main: 'MAIN', keyboard: 'KEY', side: 'SIDE', info: 'INFO', spec: 'SPEC', other: '?' };
-        const catColors = { main: 'bg-blue-500', keyboard: 'bg-cyan-500', side: 'bg-purple-500', info: 'bg-green-600', spec: 'bg-yellow-600', other: 'bg-gray-500' };
-        const cats = ['main', 'info', 'spec', 'keyboard', 'side', 'other'];
+        const catLabels = { main: 'MAIN', keyboard: 'KEY', side: 'SIDE', info: 'INFO', other: '?' };
+        const catColors = { main: 'bg-blue-500', keyboard: 'bg-cyan-500', side: 'bg-purple-500', info: 'bg-green-600', other: 'bg-gray-500' };
+        const cats = ['main', 'info', 'keyboard', 'side', 'other'];
         return (
           <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setDecomposeTarget(null)}>
             <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[85vh] overflow-hidden" onClick={e => e.stopPropagation()}>
@@ -4674,7 +4770,14 @@ function App() {
                     className="flex-1 border-2 border-gray-600 bg-gray-700 text-white rounded-lg px-4 py-3 text-xl font-mono focus:border-blue-400 focus:outline-none"
                     autoFocus
                   />
-                  {p.barcode ? <span className="text-green-400 text-2xl">✅</span> : <span className="text-red-400 text-2xl">❌</span>}
+                  {p.barcode ? (() => {
+                    const bcNorm = p.barcode.replace(/[^0-9]/g, '').padStart(6, '0').slice(-6);
+                    const found = purchaseData.some(r => {
+                      const v = String(r['バーコード番号'] || '').replace(/[^0-9]/g, '');
+                      return v.length >= 6 && v.slice(-6).padStart(6, '0') === bcNorm;
+                    });
+                    return found ? <span className="text-green-400 text-2xl" title="仕入データあり">✅</span> : <span className="text-yellow-400 text-2xl" title="仕入データに無し">⚠️</span>;
+                  })() : <span className="text-red-400 text-2xl">❌</span>}
                 </div>
                 <button onClick={() => setBcReviewIdx(Math.min(total - 1, bcReviewIdx + 1))} disabled={bcReviewIdx === total - 1} className="text-gray-400 hover:text-white disabled:opacity-20 text-2xl px-2">▶</button>
               </div>
@@ -4687,11 +4790,11 @@ function App() {
                 <div className="flex justify-between items-center">
                   <span className="text-gray-400 text-xs">{products.filter(p=>p.barcode).length}/{products.length}件 確認済み</span>
                   <button
-                    onClick={() => { setShowBcReview(false); rematchProducts(); }}
+                    onClick={() => { setShowBcReview(false); }}
                     disabled={loading}
                     className="px-4 py-2 bg-blue-500 text-white rounded font-bold hover:bg-blue-600 disabled:opacity-50"
                   >
-                    完了して照合 →
+                    ✕ 検査完了
                   </button>
                 </div>
               </div>
