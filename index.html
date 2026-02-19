@@ -101,7 +101,7 @@
     .bg-green-50.border.border-green-200 { border-radius: 6px !important; }
     
     /* Step1 グリッドを4列に */
-    .grid.grid-cols-2.lg\:grid-cols-5 { grid-template-columns: repeat(4, 1fr) !important; }
+    /* grid layout for step 1 */
   </style>
 </head>
 <body>
@@ -305,6 +305,31 @@ const cleanCpu = (cpu) => {
   return c.trim();
 };
 const cleanCpuForTitle = cleanCpu;
+
+// CPUから型番部分を抽出（8265U, 10210U, 1185G7, M1等）
+const extractCpuModel = (cpu) => {
+  if (!cpu) return '';
+  const c = cpu.replace(/\s+/g, ' ').trim();
+  // Apple Silicon: M1, M2, M3, M1 Pro, M1 Max, M2 Ultra等
+  const appleMatch = c.match(/\b(M[1-4]\s*(?:Pro|Max|Ultra)?)\b/i);
+  if (appleMatch) return appleMatch[1].toLowerCase().replace(/\s+/g, '');
+  // Apple compact: M1P-C8G14... → m1pro
+  const appleCompact = c.match(/^M(\d)(P|M|U)?[-\/]/i);
+  if (appleCompact) {
+    const suffix = {P:'pro',M:'max',U:'ultra'}[appleCompact[2]?.toUpperCase()] || '';
+    return 'm' + appleCompact[1] + suffix;
+  }
+  // Core Ultra: Core Ultra 7 155H → 155h
+  const ultraMatch = c.match(/Core\s*Ultra\s*\d+\s+(\d{3,4}[A-Za-z]*)/i);
+  if (ultraMatch) return ultraMatch[1].toLowerCase();
+  // Intel/AMD型番: 4-5桁数字 + 英字(U,H,G7等)
+  const modelMatch = c.match(/\b(\d{4,5}[A-Za-z]*\d*)\b/);
+  if (modelMatch) return modelMatch[1].toLowerCase();
+  // Core m5-6Y57等: 数字+英字+数字パターン
+  const mMatch = c.match(/\b(\d[A-Za-z]\d{2,3})\b/);
+  if (mMatch) return mMatch[1].toLowerCase();
+  return '';
+};
 
 // GPU名正規化: GA102 [GeForce RTX 3080 Ti] → GeForce RTX 3080 Ti
 const cleanGpu = (gpu) => {
@@ -1646,6 +1671,7 @@ function App() {
   const [outputDirHandle, setOutputDirHandle] = useState(null); // 画像保存先フォルダ
   const [purchaseData, setPurchaseData] = useState([]);
   const [priceData, setPriceData] = useState([]);
+  const [shopsData, setShopsData] = useState([]); // メルカリShops CSV（実出品価格）
 
   const [products, setProducts] = useState([]);
   const [currentIdx, setCurrentIdx] = useState(0);
@@ -1707,6 +1733,12 @@ function App() {
         setPriceData(data);
         console.log(`価格データ復元: ${data.length}件`);
       }
+      const savedShops = localStorage.getItem('mercari_shops_data');
+      if (savedShops) {
+        const data = JSON.parse(savedShops);
+        setShopsData(data);
+        console.log(`Shopsデータ復元: ${data.length}件`);
+      }
     } catch (e) {
       console.error('データ復元エラー:', e);
     }
@@ -1733,6 +1765,17 @@ function App() {
       localStorage.removeItem('mercari_price_data');
     }
   }, [priceData]);
+
+  // Shopsデータ変更時に保存
+  useEffect(() => {
+    if (shopsData.length > 0 && shopsData.length <= 1000) {
+      try {
+        localStorage.setItem('mercari_shops_data', JSON.stringify(shopsData));
+      } catch (e) { /* quota exceeded */ }
+    } else if (shopsData.length > 1000) {
+      localStorage.removeItem('mercari_shops_data');
+    }
+  }, [shopsData]);
 
   // === IndexedDB自動保存 ===
   // 起動時復元チェック
@@ -1772,7 +1815,7 @@ function App() {
     const isLight = pendingRestore.lightMode;
     setProducts(pendingRestore.products);
     setStep(Math.max(pendingRestore.step || 2, isLight ? 3 : 2)); // lightModeならStep3以降に強制
-    setCurrentIdx(pendingRestore.currentIdx || 0);
+    setCurrentIdx(Math.min(pendingRestore.currentIdx || 0, pendingRestore.products.length - 1));
     setMessage(`✅ 自動保存から復元: ${pendingRestore.products.length}商品（Step ${pendingRestore.step || 2}）/ ${pendingRestore.savedAt ? new Date(pendingRestore.savedAt).toLocaleString() : ''}${isLight ? ' ⚠️画像なし（スペック・価格・タイトルのみ）' : ''}`);
     setPendingRestore(null);
   };
@@ -1859,10 +1902,12 @@ function App() {
     if (confirm('保存されたCSV・価格データ・型番学習・自動保存をクリアしますか？')) {
       localStorage.removeItem('mercari_purchase_data');
       localStorage.removeItem('mercari_price_data');
+      localStorage.removeItem('mercari_shops_data');
       localStorage.removeItem('model_map_learned');
       idbClear();
       setPurchaseData([]);
       setPriceData([]);
+      setShopsData([]);
       setAutoSaveTime(null);
       setMessage('保存データをクリアしました（型番学習含む）');
     }
@@ -1961,6 +2006,37 @@ function App() {
         if (++done === files.length) {
           setPriceData(all);
           setMessage(`価格: ${all.length}件`);
+        }
+      };
+      reader.readAsArrayBuffer(f);
+    });
+  };
+
+  // メルカリShops CSV読込（実出品データ → 価格参照に最優先使用）
+  const handleShopsFiles = (files) => {
+    const all = [];
+    let done = 0;
+    files.forEach(f => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        try {
+          const wb = XLSX.read(new Uint8Array(ev.target.result), { type: 'array' });
+          const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+          // 必要列のみ抽出（163列→3列、メモリ・localStorage節約）
+          json.forEach(r => {
+            const price = parseInt(r['販売価格']) || 0;
+            if (!price || price >= 999999) return;
+            const name = r['商品名'] || '';
+            const desc = r['商品説明'] || '';
+            if (!name) return;
+            // 説明文はGPU判定に必要な部分だけ抽出（localStorage節約: 2KB→200B/件）
+            const gpuLine = desc.split('\n').find(l => /GPU|RTX|GTX|MX\d|Quadro|GeForce|Radeon/i.test(l)) || '';
+            all.push({ '商品名': name, 'gpu_info': gpuLine, '販売価格': price });
+          });
+        } catch(e) { console.error('Shops CSV parse error:', e); }
+        if (++done === files.length) {
+          setShopsData(all);
+          setMessage(`🏪 Shops: ${all.length}件読込（価格あり）`);
         }
       };
       reader.readAsArrayBuffer(f);
@@ -2783,6 +2859,104 @@ function App() {
   };
 
   // 自動画像並び替え
+  // 共通価格検索（全照合で使用）
+  // GPU型番抽出（rtx3060, mx130, quadrot1000等 → 小文字スペースなし）
+  const extractGpuModel = (gpu) => {
+    if (!gpu) return '';
+    const g = gpu.toLowerCase().replace(/\s+/g, '');
+    const m = g.match(/rtxa?\d{3,4}|gtx\d{3,4}|mx\d{2,4}|quadro[a-z]*\d{3,4}|geforce[a-z]*\d{3,4}|rx\d{3,4}/);
+    return m ? m[0] : '';
+  };
+  
+  const findPriceAdvanced = (bc, specs) => {
+    const bcNorm = bc ? bc.replace(/[^0-9]/g, '').padStart(6, '0').slice(-6) : '';
+    const cpuModel = extractCpuModel(specs?.cpu || '');
+    const mem = (specs?.memory || '').replace(/[^0-9]/g, '');
+    const gpu = (specs?.gpu || '');
+    const hasDiscreteGpu = /rtx|gtx|mx\d|quadro|a[23456]\d{3}|radeon\s*(pro|rx)|geforce/i.test(gpu);
+    const gpuModel = extractGpuModel(gpu);
+    const model = (specs?.product_name || '').toLowerCase().split('(')[0].trim();
+    
+    // テキストからGPU型番を正規化検索するヘルパー
+    const textHasGpu = (text) => /rtx|gtx|mx\d|quadro|a[23456]\d{3}|radeon\s*(pro|rx)|geforce/i.test(text);
+    const textGpuMatch = (text) => {
+      if (!gpuModel) return false;
+      const norm = text.toLowerCase().replace(/\s+/g, '');
+      return norm.includes(gpuModel);
+    };
+    
+    // 0. メルカリShops CSV（最優先: 実際の出品価格）
+    if (shopsData.length > 0 && specs) {
+      const scored = [];
+      for (const r of shopsData) {
+        const price = parseInt(r['販売価格']) || 0;
+        if (!price || price >= 999999) continue;
+        const name = String(r['商品名'] || '').toLowerCase();
+        const gpuInfo = String(r['gpu_info'] || r['商品説明'] || '').toLowerCase();
+        const text = name + ' ' + gpuInfo;
+        
+        // CPU型番必須
+        if (!cpuModel || !text.includes(cpuModel)) continue;
+        // メモリ必須（表記ゆれ: "16gb", "16GB", "メモリ16", "/ 16GB"）
+        if (mem && !text.includes(mem + 'gb') && !text.replace(/\s/g,'').includes(mem + 'gb')) continue;
+        
+        // GPU判定: 両方GPUなし or 両方あって型番一致
+        const shopHasGpu = textHasGpu(text);
+        if (hasDiscreteGpu !== shopHasGpu) continue; // GPU有無不一致→スキップ
+        let score = 10; // CPU+メモリ一致
+        if (hasDiscreteGpu && gpuModel && textGpuMatch(text)) score += 20; // GPU型番一致
+        if (model && model.length > 3 && text.includes(model)) score += 5; // 型番一致
+        scored.push({ row: r, price, score });
+      }
+      if (scored.length > 0) {
+        scored.sort((a, b) => b.score - a.score || b.price - a.price);
+        const best = scored[0];
+        return { ...best.row, 'メルカリ販売価格(入力)': best.price, '_source': 'shops' };
+      }
+    }
+    
+    // 1. 価格Excel: バーコード番号で検索
+    if (bcNorm) {
+      const bcMatch = priceData.find(r => {
+        const v = String(r['バーコード番号'] || '').replace(/[^0-9]/g, '');
+        return v.length >= 6 && v.slice(-6).padStart(6, '0') === bcNorm;
+      });
+      if (bcMatch) return bcMatch;
+      
+      // 2. 管理番号で検索（先頭6桁 or 末尾6桁）
+      const mgmtMatch = priceData.find(r => {
+        const mgmt = String(r['管理番号'] || '');
+        const nums = mgmt.replace(/[^0-9]/g, '');
+        if (nums.length < 6) return false;
+        return nums.slice(0, 6) === bcNorm || nums.slice(-6) === bcNorm;
+      });
+      if (mgmtMatch) return mgmtMatch;
+    }
+    
+    // 3. 価格Excel: Keywordでスペックマッチ
+    if (specs && priceData.some(r => r['Keyword'])) {
+      const kwMatches = priceData.filter(r => {
+        const kw = String(r['Keyword'] || '').toLowerCase();
+        if (!kw) return false;
+        if (!cpuModel || !kw.includes(cpuModel)) return false;
+        if (mem && !kw.includes(mem + 'gb') && !kw.replace(/\s/g,'').includes(mem + 'gb')) return false;
+        // GPU考慮
+        const kwHasGpu = textHasGpu(kw);
+        if (hasDiscreteGpu !== kwHasGpu) return false;
+        return true;
+      });
+      const withPrice = kwMatches.filter(r => (parseInt(r['メルカリ販売価格(入力)']) || parseInt(r['販売価格']) || 0) > 0);
+      if (withPrice.length > 0) {
+        return withPrice.sort((a, b) => {
+          const pa = parseInt(a['メルカリ販売価格(入力)']) || parseInt(a['販売価格']) || 0;
+          const pb = parseInt(b['メルカリ販売価格(入力)']) || parseInt(b['販売価格']) || 0;
+          return pb - pa;
+        })[0];
+      }
+    }
+    return null;
+  };
+
   // 軽量照合: CSVマッチ+スペック抽出+価格のみ（OCR/AI/紹介文スキップ）
   // BC検査後や再照合に使用
   const rematchProducts = () => {
@@ -2795,19 +2969,6 @@ function App() {
       if (matches.length === 0) return null;
       return matches.find(r => !String(r['バーコード番号'] || '').includes('他')) || matches[0];
     };
-    const findPrice = (bc, specs) => {
-      const bcNorm = bc.replace(/[^0-9]/g, '').padStart(6, '0').slice(-6);
-      const bcMatch = priceData.find(r => {
-        const v = String(r['バーコード番号'] || '').replace(/[^0-9]/g, '');
-        return v.length >= 6 && v.slice(-6).padStart(6, '0') === bcNorm;
-      });
-      if (bcMatch) return bcMatch;
-      const mgmtMatch = priceData.find(r => {
-        const nums = String(r['管理番号'] || '').replace(/[^0-9]/g, '');
-        return nums.length >= 6 && nums.slice(-6) === bcNorm;
-      });
-      return mgmtMatch || null;
-    };
     const np = products.map(p => {
       if (!p.barcode) return { ...p, status: p.specs?.cpu ? 'ocr_specs' : 'no_barcode', condition: p.condition || 3, conditionNotes: p.conditionNotes || '中古品なりの使用感はありますが、美品となります。' };
       const bcRaw = p.barcode.replace(/[^0-9]/g, '');
@@ -2819,7 +2980,7 @@ function App() {
       const csvSpecs = extractSpecs(row);
       const specs = p.specs?.cpu ? p.specs : csvSpecs;
       const type = p.product_type || detectProductType(row, specs);
-      const priceRow = findPrice(barcode, specs);
+      const priceRow = findPriceAdvanced(barcode, specs);
       const purchaseCost = parseInt(row['成約金額']) || parseInt(row['自社入札金額']) || null;
       const costBasedPrice = purchaseCost ? calcSellingPrice(purchaseCost) : null;
       const refPrice = priceRow ? (parseInt(priceRow['メルカリ販売価格(入力)']) || parseInt(priceRow['販売価格']) || null) : null;
@@ -2864,50 +3025,6 @@ function App() {
       const single = matches.find(r => !String(r['バーコード番号'] || '').includes('他'));
       return single || matches[0];
     };
-    const findPrice = (bc, specs) => {
-      // 1. バーコードで検索（従来形式: バーコード番号列）
-      const bcNorm = bc.replace(/[^0-9]/g, '').padStart(6, '0').slice(-6);
-      const bcMatch = priceData.find(r => {
-        const v = String(r['バーコード番号'] || '').replace(/[^0-9]/g, '');
-        return v.length >= 6 && v.slice(-6).padStart(6, '0') === bcNorm;
-      });
-      if (bcMatch) return bcMatch;
-      
-      // 2. 管理番号にバーコード含む（XLSX形式: "874471 1049-I SEL1049000001"）
-      const mgmtMatch = priceData.find(r => {
-        const mgmt = String(r['管理番号'] || '');
-        const nums = mgmt.replace(/[^0-9]/g, '');
-        return nums.length >= 6 && nums.slice(-6) === bcNorm;
-      });
-      if (mgmtMatch) return mgmtMatch;
-      
-      // 3. Keywordで型番マッチ（"DELL Latitude 3510 10210U 16GB 256GB"）
-      if (specs && priceData.some(r => r['Keyword'])) {
-        const maker = (specs.maker || '').toLowerCase();
-        const model = (specs.product_name || '').toLowerCase();
-        const cpu = (specs.cpu || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-        const mem = (specs.memory || '').replace(/[^0-9]/g, '');
-        const stor = (specs.storage || '').replace(/[^0-9]/g, '');
-        
-        // 同じ型番+CPU+メモリ+ストレージで一致するものを探す
-        const kwMatches = priceData.filter(r => {
-          const kw = String(r['Keyword'] || '').toLowerCase();
-          if (!kw) return false;
-          const kwNorm = kw.replace(/[^a-zA-Z0-9\s]/g, '');
-          const modelMatch = model && kw.includes(model.split('(')[0].trim().toLowerCase());
-          const cpuMatch = cpu && kwNorm.replace(/[^a-zA-Z0-9]/g, '').includes(cpu.slice(0, 6));
-          const memMatch = mem && kw.includes(mem + 'gb');
-          return (modelMatch || cpuMatch) && memMatch;
-        });
-        // 販売価格が入ってるものを優先、最高額を返す
-        const withPrice = kwMatches.filter(r => parseInt(r['販売価格']) > 0);
-        if (withPrice.length > 0) {
-          return withPrice.sort((a, b) => (parseInt(b['販売価格']) || 0) - (parseInt(a['販売価格']) || 0))[0];
-        }
-      }
-      return null;
-    };
-
     const np = products.map(p => {
       if (!p.barcode) return { ...p, status: 'no_barcode', condition: p.condition || 3, conditionNotes: p.conditionNotes || '中古品なりの使用感はありますが、美品となります。' };
       const bcRaw = p.barcode.replace(/[^0-9]/g, '');
@@ -2917,7 +3034,7 @@ function App() {
       if (!row) return { ...p, barcode, status: 'no_data', condition: p.condition || 3, conditionNotes: p.conditionNotes || '中古品なりの使用感はありますが、美品となります。' };
       const specs = extractSpecs(row);
       const type = detectProductType(row, specs);
-      const priceRow = findPrice(barcode, specs);
+      const priceRow = findPriceAdvanced(barcode, specs);
       const purchaseCost = parseInt(row['成約金額']) || parseInt(row['自社入札金額']) || null;
       
       // 価格決定: 仕入原価ベース vs 販売価格CSV → 高い方
@@ -3305,9 +3422,10 @@ function App() {
         const data = JSON.parse(ev.target.result);
         if (data.products) {
           setProducts(data.products);
-          setStep(data.step || 2);
-          setCurrentIdx(data.currentIdx || 0);
-          setMessage(`📂 セッション復元: ${data.products.length}商品（Step ${data.step || 2}）${data.savedAt ? ' / 保存日時: ' + new Date(data.savedAt).toLocaleString() : ''}`);
+          const isLight = data.lightMode || data.products.some(p => p.images?.length > 0 && !p.images[0]?.dataUrl);
+          setStep(Math.max(data.step || 2, isLight ? 3 : 2));
+          setCurrentIdx(Math.min(data.currentIdx || 0, data.products.length - 1));
+          setMessage(`📂 セッション復元: ${data.products.length}商品（Step ${data.step || 2}）${data.savedAt ? ' / 保存日時: ' + new Date(data.savedAt).toLocaleString() : ''}${isLight ? ' ⚠️画像なし→「📁 画像復元」で再読み込み' : ''}`);
         }
       } catch (err) { setMessage('❌ セッションファイルの読込失敗'); }
     };
@@ -3320,7 +3438,7 @@ function App() {
   return (
     <div className="min-h-screen bg-gray-100">
       <header className="bg-red-500 text-white py-3 px-6 shadow">
-        <h1 className="text-xl font-bold">メルカリCSV生成ツール <span className="text-sm font-normal text-gray-400">v5.1 (2/18)</span></h1>
+        <h1 className="text-xl font-bold">メルカリCSV生成ツール <span className="text-sm font-normal text-gray-400">v5.1 (2/19)</span></h1>
       </header>
 
       <div className="max-w-6xl mx-auto p-4">
@@ -3328,6 +3446,7 @@ function App() {
         <div className="bg-white rounded shadow p-3 mb-4 flex gap-6 text-sm items-center">
           <span>仕入: <b>{purchaseData.length}</b></span>
           <span>価格: <b>{priceData.length}</b></span>
+          {shopsData.length > 0 && <span>Shops: <b>{shopsData.length}</b></span>}
           <span>API: {apiKey ? '✓' : '未設定'}</span>
           <span className="text-purple-600">🤖 gpt-5-mini</span>
           <span className={claudeKey ? 'text-orange-500' : 'text-gray-400'}>🧠 {claudeKey ? 'Claude Haiku ✓' : 'Claude未設定'}</span>
@@ -3400,6 +3519,15 @@ function App() {
                 accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
                 multiple={true}
                 onFiles={handlePriceFiles}
+              />
+              <DropZone
+                title="Shops CSV"
+                hint="実出品価格（最優先）"
+                icon="file"
+                color="blue"
+                accept=".csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                multiple={true}
+                onFiles={handleShopsFiles}
               />
               <div className="bg-white rounded shadow p-4">
                 <h3 className="font-bold mb-3 flex items-center gap-2"><Icon name="key" className="w-5 h-5 text-purple-500"/>OpenAI API <span className="text-xs text-gray-400 font-normal">(OCR・文章生成)</span></h3>
@@ -3542,6 +3670,9 @@ function App() {
                     🔍 BC検査
                   </button>
                 )}
+                <button onClick={saveAllImages} disabled={loading} className="px-3 py-1.5 bg-green-500 text-white rounded text-sm hover:bg-green-600 disabled:opacity-50 font-medium" title="全商品の画像を保存">
+                  💾 画像DL
+                </button>
               </div>
             </div>
             <div className="border-b px-4 py-2 flex items-center gap-3 bg-gray-50">
