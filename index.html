@@ -114,6 +114,7 @@ const { useState, useRef, useCallback, useEffect } = React;
 const CONFIG = {
   category_macbook: '9taHgBE3YAkhXLEpvShiYc',
   category_windows: 'FUdk7W2MDA6tujBfXCjgr4',
+  category_desktop: '6D9RkDjCHHaVA2dLPTFcv5',  // デスクトップPC カテゴリ
   shipping_method: 3,        // 配送方法（3=らくらくメルカリ便）
   region: 'jp14',            // 発送元（jp14=神奈川県）
   shipping_days: 2,          // 発送日数（2=2~3日で発送）
@@ -158,6 +159,31 @@ const DEFAULT_NOTICE_TEXT = `※実際の商品画像です。
 ・動作に影響しないUSBポート・Type-Cポートの不良
 ・動作に影響しないカードリーダー・オーディオ端子等の不良
 ・バッテリーの劣化・消耗（ノートPCの場合）
+・その他、PC動作に影響のない微細な不具合
+※商品説明に動作確認済みと記載されている機能は保証対象です。
+※「分解・改造」について：当店からの指示なく内部パーツへの作業を行った場合は保証対象外となります。不具合が発生した場合は、まず当店へご連絡ください。
+■ 返送について
+・初期不良の場合：送料は往復すべて当店負担です。
+・初期不良以外の保証適用・返品の場合：送料はお客様負担（元払い）となります。
+■ 不具合のご連絡について
+不具合の具体的な症状・発生状況・写真または動画をご提供ください。
+情報をご提供いただけない場合は、対応をお断りすることがあります。`;
+const DEFAULT_NOTICE_TEXT_DESKTOP = `※実際の商品画像です。
+※スペックや状態の詳細は画像からご確認ください。
+※中古品のため、使用に差し支えない傷や汚れ・細かな見落としがある場合がございます。必ず写真をご確認ください。
+■ 初期不良について
+出荷日から7日以内にご連絡いただいた初期不良（電源が入らない、画面が映らないなど）については、当店にて動作確認の上、無償で交換または修理対応を行います。
+・対象期間：出荷日から7日間
+・送料：往復すべて当店負担
+■ 保証対象外
+以下の場合は保証・返品の対象外です。
+・お客様の過失による故障・破損（水濡れ・落下・衝撃・誤接続など）
+・分解・改造によるトラブル
+・お客様ご自身によるOS再インストール後のトラブル
+・ソフトウェアの不具合、対応しないゲーム等との相性問題
+・動作に影響しない軽微な外観上の傷や汚れ
+・動作に影響しないUSBポート・Type-Cポートの不良
+・動作に影響しないカードリーダー・オーディオ端子等の不良
 ・その他、PC動作に影響のない微細な不具合
 ※商品説明に動作確認済みと記載されている機能は保証対象です。
 ※「分解・改造」について：当店からの指示なく内部パーツへの作業を行った場合は保証対象外となります。不具合が発生した場合は、まず当店へご連絡ください。
@@ -260,6 +286,17 @@ const EMC_MAP = {
 const cleanCpu = (cpu) => {
   if (!cpu) return '';
   let c = cpu;
+  // OCRアーティファクト除去: "(画面表示: ...)" や "?" 等
+  c = c.replace(/\s*\(画面表示[:：].*?\)/g, '');
+  c = c.replace(/\s*\(表示[:：].*?\)/g, '');
+  c = c.replace(/\s*\(OCR[:：].*?\)/g, '');
+  c = c.replace(/\s*\(推定[:：]?.*?\)/g, '');
+  c = c.replace(/\s*\(類似[:：]?.*?\)/g, '');
+  c = c.replace(/\s*\(.*?表記.*?\)/g, '');
+  c = c.replace(/\s*\(内蔵.*?\)/g, '');
+  c = c.replace(/\s*\(.*?不明.*?\)/g, '');
+  c = c.replace(/\s*\(.*?表示あり.*?\)/g, '');
+  c = c.replace(/\?/g, '');
   // クアッドコア / デュアルコア / 6コア 等の日本語コア数を除去
   c = c.replace(/クアッドコア\s*/g, '');
   c = c.replace(/デュアルコア\s*/g, '');
@@ -321,12 +358,46 @@ const extractCpuModel = (cpu) => {
 // GPU名正規化: GA102 [GeForce RTX 3080 Ti] → GeForce RTX 3080 Ti
 const cleanGpu = (gpu) => {
   if (!gpu) return '';
+  // OCRアーティファクト除去
+  let g = gpu;
+  g = g.replace(/\?/g, '');
+  g = g.replace(/\s*\(画面表示[:：].*?\)/g, '');
+  g = g.replace(/\s*\(OCR[:：].*?\)/g, '');
+  g = g.replace(/\s*\(推定[:：]?.*?\)/g, '');
+  g = g.replace(/\s*\(類似[:：]?.*?\)/g, '');
+  g = g.replace(/\s*\(.*?表記.*?\)/g, '');
+  g = g.replace(/\s*\(.*?VRAM.*?\)/g, '');
+  g = g.replace(/\s*\(\d+[- ]?bit\)/g, '');
+  g = g.replace(/\s*\(内蔵[/／]?.*?\)/g, '');
+  g = g.replace(/\s*\(.*?不明.*?\)/g, '');
+  g = g.replace(/\s*\(.*?表示あり.*?\)/g, '');
+  g = g.replace(/\s*\(.*?または.*?\)/g, '');
+  g = g.replace(/\s*\(表示[:：].*?\)/g, '');
+  // 内蔵GPU系の曖昧表現は空にする
+  if (/^(AMD\s+)?Radeon\s*$/i.test(g.trim())) return '';
+  if (/^Intel\s*(UHD|HD|Iris)?\s*(Plus)?\s*(Graphics)?\s*\d*\s*$/i.test(g.trim())) return '';
+  if (/不明|内蔵|表示なし/i.test(g)) return '';
   // [括弧内] があればそれを使用（チップコード名除去）
-  const bracket = gpu.match(/\[(.+?)\]/);
-  let g = bracket ? bracket[1] : gpu;
+  const bracket = g.match(/\[(.+?)\]/);
+  g = bracket ? bracket[1] : g;
   // Mobile / Laptop GPU 除去
   g = g.replace(/\s*(Mobile|Laptop GPU)/gi, '');
   return g.trim();
+};
+// ディスプレイ情報クリーニング
+const cleanDisplay = (d) => {
+  if (!d) return '';
+  let s = d;
+  // OCRアーティファクト除去
+  s = s.replace(/\s*\(.*?表示.*?\)/g, '');
+  s = s.replace(/\s*\(.*?不明.*?\)/g, '');
+  s = s.replace(/\s*\(.*?画面.*?\)/g, '');
+  s = s.replace(/\s*\(推定[:：]?.*?\)/g, '');
+  s = s.replace(/\s*\(類似[:：]?.*?\)/g, '');
+  s = s.replace(/\?/g, '');
+  // "27型相当" → "27型"
+  s = s.replace(/相当/g, '');
+  return s.trim();
 };
 // メーカー名正規化
 const normalizeMaker = (m) => {
@@ -509,20 +580,27 @@ const extractSpecs = (row) => {
     s.cpu = cleanCpu(p[0]?.trim() || '');
     
     // CPU列からGPU抽出
-    p.forEach(x => { if (/RTX|GTX|MX\d/i.test(x) && !s.gpu) s.gpu = cleanGpu(x.trim()); });
+    p.forEach(x => { if (/RTX|GTX|MX\d|Quadro|(?:^|\s)T[1-9]\d{2,3}(?:\s|$)/i.test(x) && !s.gpu) s.gpu = cleanGpu(x.trim()); });
     
     // 専用列が空の場合、CPU列から抽出
     if (!s.memory && p[1]) s.memory = normalizeMemory(p[1].trim());
     if (!s.storage && p[2]) s.storage = normalizeStorage(p[2].trim());
     if (!s.display && p[3]) {
-      const d = p[3].replace(/[ｲﾝﾁインチ型]/g, '').trim();
-      if (d) s.display = `${d}インチ`;
+      const dCandidate = p[3].trim();
+      // GPU名っぽい値はディスプレイサイズとして扱わない
+      if (!/RTX|GTX|MX\d|Quadro|(?:^|\s)T[1-9]\d{2,3}(?:\s|$)/i.test(dCandidate)) {
+        const d = dCandidate.replace(/[ｲﾝﾁインチ型]/g, '').trim();
+        if (d) s.display = `${d}インチ`;
+      }
     }
     
     // Mac用: sizeがまだ空ならCPU列から取得
     if (!s.size && p[3]) {
-      const sizeFromCpu = p[3].match(/(\d{2}(?:\.\d)?)/);
-      if (sizeFromCpu) s.size = sizeFromCpu[1] + 'インチ';
+      const sizeCandidate = p[3].trim();
+      if (!/RTX|GTX|MX\d|Quadro|(?:^|\s)T[1-9]\d{2,3}(?:\s|$)/i.test(sizeCandidate)) {
+        const sizeFromCpu = sizeCandidate.match(/(\d{2}(?:\.\d)?)/);
+        if (sizeFromCpu) s.size = sizeFromCpu[1] + 'インチ';
+      }
     }
   }
   
@@ -569,10 +647,11 @@ const conditionToRank = (p) => {
   if (c <= 5) return '傷あり';
   return 'ジャンク';
 };
-const makeTitle = (p) => {
+const makeTitle = (p, pcMode) => {
   const s = p.specs || {};
   const t = p.product_type;
-  const LIMIT = 65;
+  const isDesktop = pcMode === 'desktop';
+  const LIMIT = 130;
   // ジャンク品の場合は【ジャンク】のみ、通常は【ランク】【1週間保証】
   let prefix;
   if (p.isJunk) {
@@ -584,11 +663,11 @@ const makeTitle = (p) => {
   
   if (t === 'intel_mac' || t === 'apple_silicon') {
     const parts = [];
-    // サイズを短縮: "13.3インチ (2560 x 1600) Retina" → "13.3型"
+    // サイズを短縮: "13.3インチ (2560 x 1600) Retina" → "13インチ"
     let sizeShort = '';
     const sizeStr = s.size || s.display || '';
     const sizeNum = sizeStr.match(/([\d.]+)\s*[ｲイ]?ﾝ?[ﾁチ]?/);
-    if (sizeNum) sizeShort = sizeNum[1] + '型';
+    if (sizeNum) { const n = Math.round(parseFloat(sizeNum[1])); sizeShort = n + 'インチ'; }
     parts.push(`${s.model || 'MacBook'}${sizeShort ? ' ' + sizeShort : ''}`.trim());
     if (s.year) parts.push(String(s.year));
     if (t === 'apple_silicon' && s.chip) parts.push(s.chip);
@@ -641,28 +720,50 @@ const makeTitle = (p) => {
   // フルスペック版
   const specFull = [];
   if (s.cpu) specFull.push(cleanCpuForTitle(s.cpu));
+  if (isDesktop && s.gpu && /RTX|GTX|Radeon|GeForce|Quadro|T[1-9]\d{2,3}/i.test(s.gpu)) specFull.push(s.gpu); // デスクトップ: GPU優先
   if (s.memory) specFull.push(s.memory);
   if (storForTitle) specFull.push(storForTitle);
-  if (s.gpu && /RTX|GTX|MX\d|Radeon|GeForce|Quadro/i.test(s.gpu)) specFull.push(s.gpu);
+  if (!isDesktop && s.gpu && /RTX|GTX|MX\d|Radeon|GeForce|Quadro|T[1-9]\d{2,3}/i.test(s.gpu)) specFull.push(s.gpu); // ノート: GPU最後
   
-  // タイトル組み立て（65文字以内に収める）
+  // タイトル組み立て
   const bc = p.barcode ? ' ' + p.barcode : '';
-  let title = prefix + (namepart ? namepart + ' / ' : '') + specFull.join(' / ') + bc;
+  // デスクトップの場合: namepart → model名 → GPU有り=ゲーミングPC / GPU無し=デスクトップPC
+  let displayName;
+  if (isDesktop) {
+    if (namepart) displayName = namepart;
+    else if (s.model) displayName = (maker ? maker + ' ' : '') + s.model;
+    else if (s.gpu && /RTX|GTX|Radeon RX/i.test(s.gpu)) displayName = maker ? maker + ' ゲーミングPC' : 'ゲーミングPC';
+    else displayName = maker || 'デスクトップPC';
+  } else {
+    displayName = namepart;
+  }
+  let title = prefix + (displayName ? displayName + ' / ' : '') + specFull.join(' / ') + bc;
   
   if (title.length <= LIMIT) return title;
   
-  // 省略1: GPU削除
-  const specNoGpu = specFull.filter(x => !/RTX|GTX|MX\d|Radeon|GeForce|Quadro/i.test(x));
-  title = prefix + (namepart ? namepart + ' / ' : '') + specNoGpu.join(' / ') + bc;
+  // 省略1: デスクトップ→ストレージ削除優先、ノート→GPU削除優先
+  let specReduced;
+  if (isDesktop) {
+    specReduced = specFull.filter(x => x !== storForTitle);
+  } else {
+    specReduced = specFull.filter(x => !/RTX|GTX|MX\d|Radeon|GeForce|Quadro|T[1-9]\d{2,3}/i.test(x));
+  }
+  title = prefix + (displayName ? displayName + ' / ' : '') + specReduced.join(' / ') + bc;
   if (title.length <= LIMIT) return title;
   
-  // 省略2: ストレージ削除
-  const specMin = specNoGpu.filter(x => x !== storForTitle);
-  title = prefix + (namepart ? namepart + ' / ' : '') + specMin.join(' / ') + bc;
+  // 省略2: さらに削る（デスクトップ→型番省略、ノート→ストレージ削除）
+  const specNoGpu = specFull.filter(x => !/RTX|GTX|MX\d|Radeon|GeForce|Quadro|T[1-9]\d{2,3}/i.test(x));
+  if (isDesktop) {
+    const makerOnly2 = maker || (s.gpu && /RTX|GTX|Radeon RX/i.test(s.gpu) ? 'ゲーミングPC' : 'デスクトップPC');
+    title = prefix + makerOnly2 + ' / ' + specReduced.join(' / ') + bc;
+  } else {
+    const specMin = specNoGpu.filter(x => x !== storForTitle);
+    title = prefix + (displayName ? displayName + ' / ' : '') + specMin.join(' / ') + bc;
+  }
   if (title.length <= LIMIT) return title;
   
-  // 省略3: 型番省略、メーカー名のみ残す（ユーザー要求）
-  const makerOnly = maker || namepart.split(/\s/)[0] || '';
+  // 省略3: 型番省略、メーカー名のみ残す
+  const makerOnly = maker || (isDesktop ? (s.gpu && /RTX|GTX|Radeon RX/i.test(s.gpu) ? 'ゲーミングPC' : 'デスクトップPC') : (namepart.split(/\s/)[0] || ''));
   title = prefix + (makerOnly ? makerOnly + ' / ' : '') + specNoGpu.join(' / ') + bc;
   if (title.length <= LIMIT) return title;
   
@@ -679,9 +780,10 @@ const makeTitle = (p) => {
 const JUNK_STATE_TEXT = `本商品はジャンク品のため、動作・状態・部品の欠品を一切保証しません。
 起動不可・画面不良・異音・端子不良・バッテリー劣化・外装破損など、いかなる不具合でも返品・返金・交換不可となります。
 修理・部品取り前提でご購入ください。`;
-const makeDescription = (p, customNotice) => {
+const makeDescription = (p, customNotice, pcMode) => {
   const s = p.specs || {};
   const t = p.product_type;
+  const isDesktop = pcMode === 'desktop';
   // 型番から「他 X台セット」と括弧以降を除去
   let modelClean = (s.product_name || '-').replace(/他?\s*\d+台[ｾセ][ｯッ][ﾄト]/g, '').replace(/\(.*$/, '').trim() || '-';
   if (isInternalCode(modelClean)) modelClean = '（型番不明）';
@@ -690,25 +792,47 @@ const makeDescription = (p, customNotice) => {
     lines.push(`モデル：${s.model || 'MacBook'} ${s.year || ''}`);
     if (t === 'apple_silicon') lines.push(`チップ：Apple ${s.chip || ''}`);
     else lines.push(`CPU：${s.cpu || '-'}`);
-    if (s.gpu && /RTX|GTX|MX\d|Radeon|GeForce|Quadro/i.test(s.gpu)) lines.push(`GPU：${s.gpu}`);
+    if (s.gpu && /RTX|GTX|MX\d|Radeon|GeForce|Quadro|T[1-9]\d{2,3}/i.test(s.gpu)) lines.push(`GPU：${s.gpu}`);
     lines.push(`メモリ：${s.memory || '-'}`, `ストレージ：${s.storage || '-'}`, `ディスプレイ：${s.size || '-'}`);
     if (p.cycle_count) lines.push(`充放電回数：${p.cycle_count}回`);
     if (p.battery_health) lines.push(`バッテリー最大容量：${p.battery_health}%`);
     lines.push(`初期設定パスワード：0000`);
-  } else {
+  } else if (isDesktop) {
+    // デスクトップPC用
+    const memStr = (s.memory || '-') + (s.memory_type ? ` ${s.memory_type}` : '');
     lines.push(`メーカー：${s.maker || '-'}`, `型番：${modelClean}`, `CPU：${s.cpu || '-'}`);
-    if (s.gpu && /RTX|GTX|MX\d|Radeon|GeForce|Quadro/i.test(s.gpu)) lines.push(`GPU：${s.gpu}`);
-    lines.push(`メモリ：${s.memory || '-'}`, `ストレージ：${s.storage || '-'}`, `ディスプレイ：${s.display || '-'}`, 'OS：Windows 11');
+    if (s.gpu) lines.push(`GPU：${s.gpu}`);
+    lines.push(`メモリ：${memStr}`, `ストレージ：${s.storage || '-'}`);
+    if (s.storage_detail && Array.isArray(s.storage_detail) && s.storage_detail.length > 0) {
+      s.storage_detail.forEach(d => {
+        const parts = [d.name, d.capacity, d.type].filter(Boolean);
+        if (parts.length > 0) lines.push(`　└ ${parts.join(' / ')}`);
+      });
+    }
+    lines.push('OS：Windows 11');
+    if (p.hasOffice) lines.push('Office：Microsoft Office2024(永続版)搭載\n⇒word,excel,PowerPoint等利用可能');
+  } else {
+    const memStr = (s.memory || '-') + (s.memory_type ? ` ${s.memory_type}` : '');
+    lines.push(`メーカー：${s.maker || '-'}`, `型番：${modelClean}`, `CPU：${s.cpu || '-'}`);
+    if (s.gpu && /RTX|GTX|MX\d|Radeon|GeForce|Quadro|T[1-9]\d{2,3}/i.test(s.gpu)) lines.push(`GPU：${s.gpu}`);
+    lines.push(`メモリ：${memStr}`, `ストレージ：${s.storage || '-'}`);
+    if (s.storage_detail && Array.isArray(s.storage_detail) && s.storage_detail.length > 0) {
+      s.storage_detail.forEach(d => {
+        const parts = [d.name, d.capacity, d.type].filter(Boolean);
+        if (parts.length > 0) lines.push(`　└ ${parts.join(' / ')}`);
+      });
+    }
+    lines.push(`ディスプレイ：${s.display || '-'}`, 'OS：Windows 11');
     if (p.hasOffice) lines.push('Office：Microsoft Office2024(永続版)搭載\n⇒word,excel,PowerPoint等利用可能');
   }
-  if (p.is_english_kb) lines.push('キーボード：英字配列');
+  if (!isDesktop && p.is_english_kb) lines.push('キーボード：英字配列');
   const spec = '【スペック】\n' + lines.join('\n');
   const acc = `【付属品】\n${(p.accessories || []).join('、')}`;
   // ジャンク品の場合は専用テキスト、通常はconditionNotesのみ（CSV瑕疵の生テキストは出さない）
   const stateContent = p.isJunk ? JUNK_STATE_TEXT : (p.conditionNotes || '中古品なりの使用感はありますが、美品となります。');
   const state = `【状態】\n${CONDITION_LABELS[p.condition] || 'やや傷や汚れあり'}\n${stateContent}`;
   // ジャンク品の場合はNOTICE_TEXTを省略
-  const notice = p.isJunk ? '' : (customNotice || DEFAULT_NOTICE_TEXT);
+  const notice = p.isJunk ? '' : (customNotice || (isDesktop ? DEFAULT_NOTICE_TEXT_DESKTOP : DEFAULT_NOTICE_TEXT));
   return `${p.barcode || ''}\n\n${p.intro || ''}\n\n${spec}\n\n${acc}\n\n${state}${notice ? '\n\n' + notice : ''}`;
 };
 // ===== 型番変換システム =====
@@ -858,6 +982,22 @@ ${info}
 // → 画像結合(merge)・OCR・紹介文が全て無反応になる。
 // 対策: reasoning_effort='minimal'を必ず指定 + max_completion_tokensを余裕もって設定。
 // gpt-4.1-miniにはreasoning tokensがないためこの問題は起きなかった。
+// API使用量グローバルトラッカー
+const API_COST = { claude_in: 0, claude_out: 0, openai_in: 0, openai_out: 0, calls: 0 };
+const getApiCostSummary = () => {
+  const c = API_COST;
+  // Claude Haiku 4.5: $1/MTok in, $5/MTok out. GPT-5-mini: ~$0.15/MTok in, $0.60/MTok out
+  const claudeCost = (c.claude_in * 1 + c.claude_out * 5) / 1000000;
+  const openaiCost = (c.openai_in * 0.15 + c.openai_out * 0.6) / 1000000;
+  const total = claudeCost + openaiCost;
+  return `${c.calls}回 ≈ $${total.toFixed(3)} (¥${Math.ceil(total * 150)})`;
+};
+const getApiCostDetail = () => {
+  const c = API_COST;
+  const claudeCost = (c.claude_in * 1 + c.claude_out * 5) / 1000000;
+  const openaiCost = (c.openai_in * 0.15 + c.openai_out * 0.6) / 1000000;
+  return `Claude(Haiku): ${((c.claude_in+c.claude_out)/1000).toFixed(1)}kTok ≈ $${claudeCost.toFixed(4)} | OpenAI: ${((c.openai_in+c.openai_out)/1000).toFixed(1)}kTok ≈ $${openaiCost.toFixed(4)}`;
+};
 const callOpenAI = async (key, msgs, max = 200, model = 'gpt-5-mini') => {
   const body = { model, messages: msgs, max_completion_tokens: max };
   // GPT-5系はreasoning model → minimal推論でトークン節約
@@ -869,6 +1009,7 @@ const callOpenAI = async (key, msgs, max = 200, model = 'gpt-5-mini') => {
   });
   const d = await r.json();
   if (d.error) throw new Error(d.error.message);
+  if (d.usage) { API_COST.openai_in += d.usage.prompt_tokens || 0; API_COST.openai_out += d.usage.completion_tokens || 0; API_COST.calls++; }
   return d.choices[0].message.content.trim();
 };
 // Claude API呼び出し（テキスト生成用）
@@ -895,6 +1036,7 @@ const callClaude = async (key, prompt, max = 500, modelOpt = 'haiku') => {
   });
   const d = await r.json();
   if (d.error) throw new Error(d.error.message || JSON.stringify(d.error));
+  if (d.usage) { API_COST.claude_in += d.usage.input_tokens || 0; API_COST.claude_out += d.usage.output_tokens || 0; API_COST.calls++; }
   return (d.content || []).map(c => c.text || '').join('').trim();
 };
 // OCR（gpt-5-mini + プロンプト改善）
@@ -917,7 +1059,7 @@ const ocrBarcode = async (key, dataUrl) => {
   return digits.slice(-6);
 };
 // スペック画像からPC情報を抽出（バーコード無し時に使用）
-const ocrSpecs = async (key, images, needMakerID = false) => {
+const ocrSpecs = async (key, images, needMakerID = false, claudeKey = null) => {
   // info画像を最大3枚送信。categoryなし時はバーコード以外の画像から選択（旧specも含む）
   let targets = images.filter(img => !img.excluded && (img.category === 'info' || img.category === 'spec')).slice(0, 3);
   if (targets.length === 0) {
@@ -926,35 +1068,129 @@ const ocrSpecs = async (key, images, needMakerID = false) => {
   if (targets.length === 0) return null;
   // メーカー特定が必要な場合、main画像も1枚追加（ロゴ/外観から判定）
   if (needMakerID) {
-    const mainImg = images.find(img => !img.excluded && img.category === 'main');
+    const mainImg = images.find(img => !img.excluded && (img.category === 'main' || img.category === 'front'));
     if (mainImg && !targets.includes(mainImg)) {
       targets = [mainImg, ...targets].slice(0, 4);
     }
   }
-  const makerHint = needMakerID ? `\n\nメーカー特定のヒント:\n- ノートPCの外観写真からロゴ・ブランド名を読み取る\n- ThinkPadの赤いトラックポイント(赤いポッチ)→ Lenovo\n- 天板のロゴ(DELL, HP, Lenovo, VAIO等)\n- キーボード配列やデザインの特徴\n- 外観から判別できる場合は必ずmakerに記載` : '';
-  const content = [
-    { type: 'text', text: `このPC情報画面からスペックをJSON形式で抽出してください。
-型番(product_name)の探し方:
-- 「このPCの名前を変更」付近のPC名の下に型番がある（例: FMVU75B3R, PCNS600NAB）
-- システム情報の「モデル」「型番」「Model」欄
-- 画面左下やタスクバー付近のテキスト
-- 型番は英数字の組み合わせ（6〜15文字程度）
+  const makerHint = `
+
+■メーカー特定ルール:
+- 型番やモデル名からメーカーを必ず判定すること（画面にメーカー名が直接なくても）
+- OptiPlex/Latitude/Precision/Inspiron/XPS/Vostro → DELL
+- ProDesk/EliteDesk/ProBook/EliteBook/Z Workstation/Pavilion → HP
+- ThinkCentre/ThinkPad/IdeaCentre/IdeaPad → Lenovo
+- ESPRIMO/LIFEBOOK/PRIMERGY → Fujitsu
+- Mate/VersaPro/LAVIE/Express5800 → NEC
+- GALLERIA/Diginnos/raytrek → ドスパラ(Dospara)
+- G-GEAR/G-MASTER → TSUKUMO
+- DAIV/G-Tune/mouse → mouse
+- GHシリーズ/FRGHL/FRGXN → FRONTIER
+- dynabook → dynabook
+- VAIO → VAIO
+- Mac/MacBook/iMac → Apple
+${needMakerID ? '- 外観写真のロゴからも判定可（DELL/HP/Lenovo等）' : ''}`;
+  const promptText = `このPC情報画面からスペックをJSON形式で抽出してください。
+
+■最重要ルール: 画面に表示されている文字をそのまま読むこと
+- 推測・推定・丸め・補正は絶対禁止
+- CPU名: 画面に「i7-4790」とあれば「Core i7-4790」。「i7-4770」と読めるなら「Core i7-4770」。似た型番に置き換えない
+- GPU名: 画面に「GTX 760」とあれば「GeForce GTX 760」。「GTX 970」等の別型番に置き換えない
+- ストレージ: 画面に「120.0 GB」とあれば「120GB」。「128GB」に丸めない
+- メモリ: 画面に「8.00 GB」とあれば「8GB」。画面の数字だけを信じる
+- VRAM・バス幅等の補足情報は不要。型番名のみを記載
+- 「(推定)」「(表記あり)」「(類似)」等の注釈は絶対に付けない
+
+■画面に複数ウィンドウが並んでいる場合の読み方:
+- CPU-Z: Processorタブ → CPU名（Name欄）とコア数。Memoryタブ → DDR4/DDR5等の規格
+- GPU-Z: GPU名（Name欄）とVRAM容量
+- CrystalDiskInfo: ドライブ名・容量・種別（SATA SSD/NVMe SSD/HDD）・型番
+- タスクマネージャー: メモリ合計容量、CPU名
+- システム情報/バージョン情報: 型番(プロダクトID付近)、OS、メーカー
+- FF14ベンチマーク結果画面の下部テキスト: CPU名、GPU名、VRAM、解像度が記載されている → これも読み取る
+- 各ウィンドウの情報を統合して最終的なスペックを判断すること
+- 文字が小さくても読み取れる範囲で最善を尽くす。完全に読めない場合のみnull
+
+型番(product_name)の探し方（優先順に）:
+1. システム情報/バージョン情報の「型番」「Model」「プロダクト名」欄
+2. 「このPCの名前を変更」付近のPC名の下にある型番（例: FMVU75B3R, PCNS600NAB）
+3. CPU-ZのMainboardタブ → Manufacturer + Model欄（例: Hewlett-Packard 2AF3 → product_name:"2AF3", maker:"HP"）
+4. 画面左下やタスクバー付近のテキスト
+- 型番は英数字の組み合わせ（3〜15文字程度）
+- DESKTOP-xxxxxxは型番ではない（Windowsのコンピュータ名）
 バッテリー情報:
 - CYCLE COUNT = 充放電回数
-- FULL CHARGE CAPACITY / DESIGN CAPACITY = バッテリー健康度(%)${makerHint}
+- FULL CHARGE CAPACITY / DESIGN CAPACITY = バッテリー健康度(%)
+メモリ情報:
+- 容量（8GB/16GB/32GB等）とメモリ規格（DDR4/DDR5等）を分けて記載
+- CPU-ZやTask Manager等から読み取れる場合のみ記載。不明ならnull
+ストレージ情報:
+- storageは合計容量と種別の簡潔な表記（例: "1TB NVMe SSD"、"500GB SSD + 2TB HDD"）
+- storage_detailは各ドライブの型番・メーカー・容量・種別を配列で記載。CrystalDiskInfo/CrystalDiskMark/デバイスマネージャ等から読めた場合のみ
+- 例: [{"name":"Samsung 980 PRO","capacity":"1TB","type":"NVMe SSD"},{"name":"WD Blue WD20EZAZ","capacity":"2TB","type":"HDD"}]${makerHint}
 出力JSON（読み取れない項目はnull）:
-{"maker":"メーカー名","product_name":"型番(FMVU75B3R等の英数コード)","model":"MacBook Pro等のシリーズ名","cpu":"CPU名","memory":"8GB等","storage":"256GB SSD等","display":"14型等","gpu":"GPU名","os":"OS名","year":2020,"chip":"Apple Silicon名(M1等)","size":"画面サイズ(13.3型等)","cycle_count":"充放電回数(数値)","battery_health":"バッテリー最大容量%(FULL/DESIGN×100)"}
-JSON以外は返さないでください。` }
-  ];
-  for (const img of targets) {
-    const small = await shrinkForAPI(img.dataUrl, 1024);
-    content.push({ type: 'image_url', image_url: { url: small, detail: 'high' } });
-  }
+{"maker":"メーカー名","product_name":"型番","model":"シリーズ名","cpu":"CPU名","memory":"16GB等","memory_type":"DDR5等(不明ならnull)","storage":"1TB NVMe SSD等","storage_detail":[{"name":"型番","capacity":"容量","type":"NVMe SSD/SATA SSD/HDD"}],"display":"14型等","gpu":"GPU名","os":"OS名","year":2020,"chip":"Apple Silicon名","size":"画面サイズ","cycle_count":"充放電回数","battery_health":"バッテリー最大容量%"}
+JSON以外は返さないでください。`;
+
   try {
-    const result = await callOpenAI(key, [{ role: 'user', content }], 500, 'gpt-5-mini');
-    const clean = result.replace(/```json|```/g, '').trim();
-    return JSON.parse(clean);
+    if (claudeKey) {
+      // Claude API（画像OCR精度が高い）
+      const imgContents = [];
+      for (const img of targets) {
+        // spec画像は縮小を最小限に（モニター写真の細かい文字を読むため）
+        const small = await shrinkForAPI(img.dataUrl, 4096, 0.92);
+        const match = small.match(/^data:(image\/\w+);base64,(.+)$/);
+        if (match) imgContents.push({ type: 'image', source: { type: 'base64', media_type: match[1], data: match[2] } });
+      }
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+        body: JSON.stringify({ model: CLAUDE_MODELS.haiku, max_tokens: 2000, messages: [{ role: 'user', content: [{ type: 'text', text: promptText }, ...imgContents] }] })
+      });
+      const d = await r.json();
+      if (d.error) throw new Error(d.error.message || JSON.stringify(d.error));
+      if (d.usage) { API_COST.claude_in += d.usage.input_tokens || 0; API_COST.claude_out += d.usage.output_tokens || 0; API_COST.calls++; }
+      const text = (d.content || []).map(c => c.text || '').join('').trim();
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) return inferMakerFromModel(JSON.parse(jsonMatch[0]));
+      throw new Error('Claude OCR: JSONパース失敗');
+    } else {
+      // OpenAI fallback
+      const content = [{ type: 'text', text: promptText }];
+      for (const img of targets) {
+        const small = await shrinkForAPI(img.dataUrl, 4096, 0.92);
+        content.push({ type: 'image_url', image_url: { url: small, detail: 'high' } });
+      }
+      const result = await callOpenAI(key, [{ role: 'user', content }], 800, 'gpt-5-mini');
+      const clean = result.replace(/```json|```/g, '').trim();
+      return inferMakerFromModel(JSON.parse(clean));
+    }
   } catch (e) { console.error('ocrSpecs error:', e); return null; }
+};
+// OCR結果からモデル名→メーカー自動推定
+const inferMakerFromModel = (result) => {
+  if (!result) return result;
+  if (result.maker && !/^不明|^unknown|^表示なし/i.test(result.maker)) return result;
+  const all = [result.product_name, result.model, result.cpu].filter(Boolean).join(' ').toLowerCase();
+  const rules = [
+    [/optiplex|latitude|precision|inspiron|xps|vostro|dell/i, 'DELL'],
+    [/prodesk|elitedesk|prodesk|elitebook|probook|pavilion|compaq|z\d+ (g\d|workstation)/i, 'HP'],
+    [/thinkcentre|thinkpad|ideacentre|ideapad|thinkstation/i, 'Lenovo'],
+    [/esprimo|lifebook|primergy|futro|fmv/i, 'Fujitsu'],
+    [/mate |versapro|lavie|express5800|valuestar/i, 'NEC'],
+    [/galleria|diginnos|raytrek/i, 'ドスパラ(Dospara)'],
+    [/g-gear|g-master/i, 'TSUKUMO'],
+    [/daiv|g-tune|mouse/i, 'mouse'],
+    [/frg[hxn]|frontier/i, 'FRONTIER'],
+    [/dynabook/i, 'dynabook'],
+    [/vaio/i, 'VAIO'],
+    [/surface/i, 'Microsoft'],
+    [/macbook|imac|mac mini|mac pro/i, 'Apple'],
+  ];
+  for (const [re, maker] of rules) {
+    if (re.test(all)) { result.maker = maker; break; }
+  }
+  return result;
 };
 // 画像縮小ユーティリティ（API送信用）
 const shrinkForAPI = (dataUrl, maxSize = 512, quality = 0.6) => new Promise(resolve => {
@@ -1008,8 +1244,10 @@ const classifyImages = async (claudeKey, images) => {
 ■状態判定:
 condition: 3がデフォルト。画面色むら/筐体割れ/キー欠損/ヒンジ破損のみ4-5。
 notes: condition 4-5の場合のみ具体的な問題点を記載（例:「画面に色むらがあります」）。condition 3の場合はnotesは空文字""。
+■付箋メモ（tape_note）:
+バーコード画像の近くに青いマスキングテープや付箋が貼ってあり、手書きで状態メモ（例:「パームレスト左下 へこみ」「液晶シミ」等）が書かれている場合、そのテキストをtape_noteに記載。付箋がなければtape_noteは空文字""。
 JSON出力（JSONのみ、他のテキスト不要）:
-{"results":[{"index":0,"category":"main"},{"index":1,"category":"info","info_text":"読めたテキスト"},...], "condition":3, "notes":"..."}
+{"results":[{"index":0,"category":"main"},{"index":1,"category":"info","info_text":"読めたテキスト"},...], "condition":3, "notes":"...", "tape_note":"..."}
 infoの場合のみinfo_textに読めたテキストを記載。`;
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -1027,13 +1265,14 @@ infoの場合のみinfo_textに読めたテキストを記載。`;
   });
   const d = await r.json();
   if (d.error) throw new Error(d.error.message || JSON.stringify(d.error));
+  if (d.usage) { API_COST.claude_in += d.usage.input_tokens || 0; API_COST.claude_out += d.usage.output_tokens || 0; API_COST.calls++; }
   
   try {
     const text = (d.content || []).map(c => c.text || '').join('').trim();
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
-      console.log('🔍 Claude分類結果:', parsed.results?.map(r => `[${r.index}]${r.category}${r.info_text ? '('+r.info_text+')' : ''}`).join(', '), `condition:${parsed.condition}`);
+      console.log('🔍 Claude分類結果:', parsed.results?.map(r => `[${r.index}]${r.category}${r.info_text ? '('+r.info_text+')' : ''}`).join(', '), `condition:${parsed.condition}`, parsed.tape_note ? `tape_note:${parsed.tape_note}` : '');
       // info_textバリデーション: infoなのにテキスト根拠がないものはsideに格下げ
       const validated = (parsed.results || []).map(r => {
         if (r.category === 'info' && (!r.info_text || r.info_text.trim().length < 3)) {
@@ -1045,7 +1284,8 @@ infoの場合のみinfo_textに読めたテキストを記載。`;
       return {
         results: validated,
         condition: parsed.condition || 3,
-        notes: parsed.notes || ''
+        notes: parsed.notes || '',
+        tape_note: parsed.tape_note || ''
       };
     }
   } catch (e) {
@@ -1053,19 +1293,130 @@ infoの場合のみinfo_textに読めたテキストを記載。`;
   }
   return null;
 };
-const generateIntro = async (key, p, cKey) => {
+// デスクトップPC用 画像分類
+const classifyImagesDesktop = async (claudeKey, images) => {
+  const imgCount = images.length;
+  const maxSize = imgCount > 10 ? 512 : imgCount > 6 ? 768 : 1024;
+  const quality = imgCount > 10 ? 0.6 : imgCount > 6 ? 0.7 : 0.85;
+  console.log(`🖥️ デスクトップ分類: ${imgCount}枚 → ${maxSize}px/${Math.round(quality*100)}%`);
+  
+  const smallUrls = await Promise.all(images.map(img => shrinkForAPI(img.dataUrl, maxSize, quality)));
+  const imageContents = smallUrls.map(url => {
+    const match = url.match(/^data:(image\/\w+);base64,(.+)$/);
+    if (!match) return null;
+    return { type: 'image', source: { type: 'base64', media_type: match[1], data: match[2] } };
+  }).filter(Boolean);
+  
+  const prompt = `中古デスクトップPC写真${images.length}枚を分類。各画像ごとに以下の判定フローで1カテゴリを決定。
+■判定フロー（上から順に判定、最初に該当したものが答え）:
+1. バーコード（縦線＋数字列）が写っている？ → barcode
+2. PCの画面にスペック情報が表示されている？（システム情報/CPU名/RAM/OS/GPU-Z/CPU-Z/CrystalDiskMark等）→ spec
+3. PC内部が見える？（サイドパネル開放、LED発光、マザーボード/GPU/ファンが見える）→ interior
+4. PCの背面写真？→ back
+   背面の特徴: I/Oパネル（USB/HDMI/LAN等のポートが密集）、電源ユニットのコネクタ、PCIスロットカバー/GPUブラケットが見える
+5. PCの正面写真？→ front
+   正面の特徴: フロントパネル（メッシュ/デザインパネル/ブランドロゴ）、電源ボタン、フロントUSB/オーディオ端子。
+   ※ゲーミングPCの正面はデザイン重視でポート類が少ない場合が多い。背面ポートが見えなければfrontの可能性が高い
+6. PCの側面/天面/底面 → side
+   ※側面は平坦なパネル（アクリル/スチール）。frontと迷ったら「ポート密集=back、デザイン面=front、平坦パネル=side」で判定
+7. どれにも該当しない → other
+■補足ルール:
+・同じカテゴリが何枚あってもOK。バランスを取る必要はない
+・specは「PCのモニターに表示されたスペック情報」のみ。本体ラベル/シールはspecではない
+・暗い画面でもテキスト（CPU-Z/GPU-Z/DiskMark等）が読めればspec
+・LED発光で内部が見えるもの（RGB等）→ interior
+・付属品の写真（箱/ケーブル等）→ other
+■状態判定:
+condition: 3がデフォルト。筐体に大きな傷/凹み/パーツ破損のみ4-5。
+notes: condition 4-5の場合のみ具体的な問題点を記載。condition 3の場合はnotesは空文字""。
+■付箋メモ（tape_note）:
+バーコード画像の近くに青いマスキングテープや付箋が貼ってあり、手書きで状態メモ（例:「天板キズ」「側面へこみ」等）が書かれている場合、そのテキストをtape_noteに記載。付箋がなければtape_noteは空文字""。
+JSON出力（JSONのみ、他のテキスト不要）:
+{"results":[{"index":0,"category":"front"},{"index":1,"category":"spec","info_text":"読めたテキスト"},...], "condition":3, "notes":"...", "tape_note":"..."}
+specの場合のみinfo_textに読めたテキストを記載。`;
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': claudeKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true'
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 2000,
+      messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...imageContents] }]
+    })
+  });
+  const d = await r.json();
+  if (d.error) throw new Error(d.error.message || JSON.stringify(d.error));
+  if (d.usage) { API_COST.claude_in += d.usage.input_tokens || 0; API_COST.claude_out += d.usage.output_tokens || 0; API_COST.calls++; }
+  try {
+    const text = (d.content || []).map(c => c.text || '').join('').trim();
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      console.log('🔍 デスクトップ分類結果:', parsed.results?.map(r => `[${r.index}]${r.category}${r.info_text ? '('+r.info_text+')' : ''}`).join(', '), `condition:${parsed.condition}`, parsed.tape_note ? `tape_note:${parsed.tape_note}` : '');
+      const validated = (parsed.results || []).map(r => {
+        if (r.category === 'spec' && (!r.info_text || r.info_text.trim().length < 3)) {
+          console.warn(`⚠️ [${r.index}] spec→side格下げ（info_text無し）`);
+          return { ...r, category: 'side' };
+        }
+        return r;
+      });
+      return { results: validated, condition: parsed.condition || 3, notes: parsed.notes || '', tape_note: parsed.tape_note || '' };
+    }
+  } catch (e) { console.error('デスクトップ分類パースエラー:', e); }
+  return null;
+};
+// スペックからフォールバック紹介文を生成（API不要）
+const buildFallbackIntro = (p, pcMode) => {
+  const s = p.specs || {};
+  const maker = s.maker || '';
+  const cpu = s.cpu || '';
+  const mem = s.memory || '';
+  const stor = s.storage || '';
+  const gpu = s.gpu || '';
+  const isDesktop = pcMode === 'desktop';
+  const hasGaming = gpu && /RTX|GTX|Radeon RX/i.test(gpu);
+  
+  if (isDesktop && hasGaming) {
+    const parts = [`${maker ? maker + 'の' : ''}ゲーミングデスクトップPCです。`];
+    if (gpu) parts.push(`グラフィックボードに${gpu}を搭載し、人気タイトルも快適にプレイ可能です。`);
+    if (cpu) parts.push(`CPUは${cpu}を搭載`);
+    if (mem) parts[parts.length - 1] += `、メモリ${mem}`;
+    if (stor) parts[parts.length - 1] += `、ストレージは${stor}`;
+    parts[parts.length - 1] += 'で、ゲームはもちろん動画編集や配信にもお使いいただけます。';
+    return parts.join('');
+  }
+  
+  const pcType = isDesktop ? 'デスクトップPC' : 'ノートPC';
+  const parts = [`${maker ? maker + 'の' : ''}中古${pcType}です。`];
+  const specParts = [];
+  if (cpu) specParts.push(`CPU: ${cpu}`);
+  if (mem) specParts.push(`メモリ: ${mem}`);
+  if (stor) specParts.push(`ストレージ: ${stor}`);
+  if (specParts.length > 0) parts.push(`${specParts.join('、')}を搭載し、日常作業やビジネス用途に十分な性能です。`);
+  if (gpu && /RTX|GTX|Radeon|GeForce/i.test(gpu)) parts.push(`${gpu}搭載で、軽めのゲームや動画編集にも対応可能です。`);
+  else if (gpu && /Quadro|T[1-9]\d{2,3}/i.test(gpu)) parts.push(`${gpu}搭載で、CADや3Dモデリングなどのクリエイティブ作業にも対応可能です。`);
+  parts.push('テレワークや普段使いにおすすめの一台です。');
+  return parts.join('');
+};
+const generateIntro = async (key, p, cKey, pcMode) => {
   const s = p.specs || {};
   // 型番から「他 X台セット」を削除
   let modelClean = (s.product_name || '').replace(/他?\s*\d+台[ｾセ][ｯッ][ﾄト]/g, '').replace(/\(.*$/, '').trim();
   if (isInternalCode(modelClean)) modelClean = '';
   const officeInfo = p.hasOffice ? 'Microsoft Office2024(永続版)搭載' : '';
   const makerModel = [s.maker, modelClean].filter(Boolean).join(' ');
+  const isDesktop = pcMode === 'desktop';
+  const pcType = isDesktop ? 'デスクトップPC' : 'ノートPC';
   
   // ジャンク品の場合は専用プロンプト
   if (p.isJunk) {
-    const prompt = `メルカリ出品用のジャンク品PCの紹介文を書いてください。
-商品: ${makerModel || '中古PC'}
-CPU: ${s.cpu || '不明'} / メモリ: ${s.memory || '不明'} / ストレージ: ${s.storage || '不明'}
+    const prompt = `メルカリ出品用のジャンク品${pcType}の紹介文を書いてください。
+商品: ${makerModel || `中古${pcType}`}
+CPU: ${s.cpu || '不明'} / メモリ: ${s.memory || '不明'} / ストレージ: ${s.storage || '不明'}${s.gpu && /RTX|GTX|Radeon|GeForce|Quadro|T[1-9]\d{2,3}/i.test(s.gpu) ? ` / GPU: ${s.gpu}` : ''}
 条件:
 - 3〜4文で簡潔に
 - ジャンク品・動作保証なし・修理/部品取り用であることを明記
@@ -1077,6 +1428,49 @@ CPU: ${s.cpu || '不明'} / メモリ: ${s.memory || '不明'} / ストレージ
   }
   
   const officeNote = officeInfo ? `\nOffice: ${officeInfo}` : '';
+  const gpuNote = s.gpu && /RTX|GTX|Radeon|GeForce|Quadro|T[1-9]\d{2,3}/i.test(s.gpu) ? `\nGPU: ${s.gpu}` : '';
+  
+  if (isDesktop) {
+    const hasGaming = s.gpu && /RTX|GTX|Radeon RX/i.test(s.gpu);
+    const prompt = hasGaming
+      ? `メルカリ出品用のゲーミングPCの紹介文を書いてください。
+商品: ${makerModel || 'ゲーミングPC'}
+CPU: ${s.cpu || '不明'} / メモリ: ${s.memory || '不明'} / ストレージ: ${s.storage || '不明'}
+GPU: ${s.gpu}
+条件:
+- 4〜6文で、このPCのゲーミング性能を具体的にアピール
+- 1文目: このGPUの性能ランクを端的に（エントリー/ミドル/ハイエンド等）
+- 2〜3文目: このGPUで実際にプレイできるゲームタイトル（Apex Legends, Fortnite, VALORANT, FF14, 原神, Minecraft等）を2〜3個挙げ、想定される画質設定（低/中/高/最高/フルHD/WQHD/4K等）を具体的に書く。GPUの実性能に基づいて正確に書くこと（例: RTX3060なら「フルHDで高〜最高設定」、RTX4070Tiなら「WQHD最高設定やレイトレーシングも快適」等）
+- 4文目: ゲーム以外の用途（動画編集、配信、3Dモデリング等）にも触れる
+- 最終文: まとめ（初めてのゲーミングPC/本格派/コスパ重視 等、ターゲットに合わせて）
+- GPU名・CPU名のスペック値は絶対に改変しない。ただしCPU略称は正式名に変換可
+- Officeについて一切言及しない
+- 「中古品ですが」「状態は」等の状態言及は不要
+- 紹介文のみ出力（見出し・箇条書き・改行区切り不要）
+紹介文:`
+      : `メルカリ出品用の中古デスクトップPCの紹介文を書いてください。
+商品: ${makerModel || '中古デスクトップPC'}
+CPU: ${s.cpu || '不明'} / メモリ: ${s.memory || '不明'} / ストレージ: ${s.storage || '不明'}${gpuNote}${officeNote}
+条件:
+- 3〜4文で簡潔に、購入意欲を高める自然な日本語で
+- 1文目: 商品の特徴や強みを端的に
+- 2〜3文目: スペックの魅力を具体的に（マルチタスク、データ保存、ビジネス用途など実用面で）
+- 最終文: 用途提案（ビジネス、リモートワーク、普段使いなど）
+- CPU略称は正式名に変換可（C5→Core i5等）。それ以外のスペック値は改変禁止
+- Officeについて一切言及しない
+- 「中古品ですが」「状態は」等の状態言及は不要
+- 紹介文のみ出力（見出し・箇条書き・改行区切り不要）
+紹介文:`;
+    if (cKey) {
+      const result = await callClaude(cKey, prompt, hasGaming ? 800 : 500);
+      if (result && result.length > 40) return result;
+    } else {
+      const result = await callOpenAI(key, [{ role: 'user', content: prompt }], hasGaming ? 800 : 500);
+      if (result && result.length > 40) return result;
+    }
+    return buildFallbackIntro(p, pcMode);
+  }
+  
   const prompt = `メルカリ出品用の中古ノートPCの紹介文を書いてください。
 商品: ${makerModel || '中古ノートPC'}
 CPU: ${s.cpu || '不明'} / メモリ: ${s.memory || '不明'} / ストレージ: ${s.storage || '不明'}${officeNote}
@@ -1090,8 +1484,14 @@ CPU: ${s.cpu || '不明'} / メモリ: ${s.memory || '不明'} / ストレージ
 - 「中古品ですが」「状態は」等の状態言及は不要（別セクションで記載済み）
 - 紹介文のみ出力（見出し・箇条書き・改行区切り不要）
 紹介文:`;
-  if (cKey) return await callClaude(cKey, prompt, 500);
-  return await callOpenAI(key, [{ role: 'user', content: prompt }], 500);
+  if (cKey) {
+    const result = await callClaude(cKey, prompt, 500);
+    if (result && result.length > 40) return result;
+  } else {
+    const result = await callOpenAI(key, [{ role: 'user', content: prompt }], 500);
+    if (result && result.length > 40) return result;
+  }
+  return buildFallbackIntro(p, pcMode);
 };
 // 画像結合関数（2枚横並び / 3枚L字 / 4枚グリッド）
 const mergeImages = async (images, cols = 2) => {
@@ -1169,6 +1569,7 @@ const Icon = ({ name, className = "w-5 h-5" }) => {
     eye: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />,
     eyeOff: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />,
     search: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />,
+    monitor: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />,
   };
   return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">{icons[name]}</svg>;
 };
@@ -1633,9 +2034,117 @@ const idbDeleteKey = async (key) => {
     db.close();
   } catch(e) {}
 };
+// 分類結果から画像を並替え（notebook/desktop共通ヘルパー）
+const sortClassifiedImages = async (p, allActive, classResult, pcMode, autoMergeOn, apiKey) => {
+  const { results: classifications, condition, notes, tape_note } = classResult;
+  p.condition = condition || 3;
+  p.conditionNotes = (condition && condition >= 4 && notes) ? notes : '';
+  // 付箋メモがある場合は状態に反映
+  if (tape_note) {
+    p.conditionNotes = tape_note;
+    if (p.condition < 4) p.condition = 4; // 付箋があれば最低でも4
+    console.log(`📝 付箋メモ検出: "${tape_note}" → condition=${p.condition}`);
+  }
+  
+  const isDesktop = pcMode === 'desktop';
+  const sorted = [];
+  const mergedSrcIds = new Set();
+  
+  const mergeAndPush = async (imgs, name) => {
+    if (!autoMergeOn) { sorted.push(...imgs); return; }
+    if (imgs.length >= 2) {
+      const { dataUrl, filename } = await mergeImages(imgs, 2);
+      sorted.push({ id: `merged_${Date.now()}_${name}`, filename, dataUrl, excluded: false, category: name });
+      imgs.forEach(img => mergedSrcIds.add(img.id));
+    } else { sorted.push(...imgs); }
+  };
+  
+  if (isDesktop) {
+    // デスクトップPC: front(1枚) → spec → interior → back → side → other → barcode
+    const byCategory = { spec: [], front: [], interior: [], back: [], side: [], barcode: [], other: [] };
+    classifications.forEach(c => {
+      const img = allActive[c.index];
+      if (!img) return;
+      let cat = c.category;
+      if (cat === 'info' || cat === 'screen' || cat === 'battery') cat = 'spec';
+      if (cat === 'main') cat = 'front';
+      if (cat === 'keyboard') cat = 'other';
+      img.category = byCategory[cat] ? cat : 'other';
+      if (byCategory[cat]) byCategory[cat].push(img);
+      else byCategory.other.push(img);
+    });
+    
+    // front(1枚目=メイン写真) → spec(2枚目以降) → interior → back → side → other → barcode
+    sorted.push(...byCategory.front.slice(0, 1));
+    if (byCategory.front.length > 1) byCategory.other.push(...byCategory.front.slice(1));
+    if (byCategory.spec.length >= 2) { await mergeAndPush(byCategory.spec.slice(0, 4), 'spec'); if (byCategory.spec.length > 4) byCategory.other.push(...byCategory.spec.slice(4)); }
+    else { sorted.push(...byCategory.spec); }
+    sorted.push(...byCategory.interior.slice(0, 3));
+    if (byCategory.interior.length > 3) byCategory.other.push(...byCategory.interior.slice(3));
+    sorted.push(...byCategory.back.slice(0, 2));
+    if (byCategory.back.length > 2) byCategory.other.push(...byCategory.back.slice(2));
+    if (byCategory.side.length >= 2) {
+      await mergeAndPush(byCategory.side.slice(0, 8), 'side');
+      if (byCategory.side.length > 8) byCategory.other.push(...byCategory.side.slice(8));
+    } else { sorted.push(...byCategory.side); }
+    sorted.push(...byCategory.other);
+    sorted.forEach(img => img.isBarcode = false);
+    byCategory.barcode.forEach((img, bi) => { if (bi === 0) { img.isBarcode = true; } else { img.isBarcode = false; img.category = 'other'; sorted.push(img); } });
+    byCategory.barcode = byCategory.barcode.slice(0, 1);
+    sorted.push(...byCategory.barcode);
+    // BC補正: barcode=0枚かつspec画像がある場合
+    if (byCategory.barcode.length === 0 && byCategory.spec.length > 0 && apiKey && !p.barcode) {
+      for (const specImg of byCategory.spec) {
+        try {
+          const bc = await ocrBarcode(apiKey, specImg.dataUrl);
+          if (bc) { specImg.isBarcode = true; specImg.category = 'barcode'; p.barcode = bc; break; }
+        } catch(e) {}
+      }
+    }
+  } else {
+    // ノートPC: main → info → keyboard → side → other → barcode
+    const byCategory = { main: [], keyboard: [], side: [], info: [], barcode: [], other: [] };
+    classifications.forEach(c => {
+      const img = allActive[c.index];
+      if (!img) return;
+      const cat = (c.category === 'screen' || c.category === 'battery' || c.category === 'spec') ? 'info' : c.category;
+      img.category = byCategory[cat] ? cat : 'other';
+      if (byCategory[cat]) byCategory[cat].push(img);
+      else byCategory.other.push(img);
+    });
+    sorted.push(...byCategory.main.slice(0, 2));
+    if (byCategory.main.length > 2) byCategory.other.push(...byCategory.main.slice(2));
+    if (byCategory.info.length >= 2) { await mergeAndPush(byCategory.info.slice(0, 4), 'info'); if (byCategory.info.length > 4) byCategory.other.push(...byCategory.info.slice(4)); }
+    else { sorted.push(...byCategory.info); }
+    if (byCategory.keyboard.length >= 2) { await mergeAndPush(byCategory.keyboard.slice(0, 4), 'keyboard'); if (byCategory.keyboard.length > 4) byCategory.other.push(...byCategory.keyboard.slice(4)); }
+    else { sorted.push(...byCategory.keyboard); }
+    if (byCategory.side.length >= 2) {
+      await mergeAndPush(byCategory.side.slice(0, 8), 'side');
+      if (byCategory.side.length > 8) byCategory.other.push(...byCategory.side.slice(8));
+    } else { sorted.push(...byCategory.side); }
+    sorted.push(...byCategory.other);
+    sorted.forEach(img => img.isBarcode = false);
+    byCategory.barcode.forEach((img, bi) => { if (bi === 0) { img.isBarcode = true; } else { img.isBarcode = false; img.category = 'other'; sorted.push(img); } });
+    byCategory.barcode = byCategory.barcode.slice(0, 1);
+    sorted.push(...byCategory.barcode);
+    if (byCategory.barcode.length === 0 && byCategory.info.length > 0 && apiKey && !p.barcode) {
+      for (const infoImg of byCategory.info) {
+        try {
+          const bc = await ocrBarcode(apiKey, infoImg.dataUrl);
+          if (bc) { infoImg.isBarcode = true; infoImg.category = 'barcode'; p.barcode = bc; break; }
+        } catch(e) {}
+      }
+    }
+  }
+  
+  const excludedImgs = p.images.filter(img => img.excluded || mergedSrcIds.has(img.id)).map(img => ({ ...img, excluded: true }));
+  p.images = [...sorted, ...excludedImgs];
+};
 // メインApp
 function App() {
   const [step, setStep] = useState(1);
+  const [pcMode, setPcMode] = useState(() => localStorage.getItem('mercari_pc_mode') || 'notebook'); // 'notebook' or 'desktop'
+  const setPcModeAll = (v) => { setPcMode(v); localStorage.setItem('mercari_pc_mode', v); };
   const [apiKey, setApiKey] = useState(localStorage.getItem('openai_key') || '');
   const [claudeKey, setClaudeKey] = useState(localStorage.getItem('claude_key') || '');
   const [outputDirHandle, setOutputDirHandle] = useState(null); // 画像保存先フォルダ
@@ -1652,6 +2161,9 @@ function App() {
   const [selectedImages, setSelectedImages] = useState([]);
   const [imageHistory, setImageHistory] = useState([]); // 履歴（Undo用）
   const [zoomImage, setZoomImage] = useState(null); // {dataUrl, imgIdx} or null
+  const [autoMerge, setAutoMerge] = useState(() => localStorage.getItem('mercari_autoMerge') !== 'false'); // デフォルトON
+  const autoMergeRef = useRef(autoMerge);
+  const setAutoMergeAll = (v) => { setAutoMerge(v); autoMergeRef.current = v; localStorage.setItem('mercari_autoMerge', v); };
   const [hoverImg, setHoverImg] = useState(null); // dataUrl for preview
   const [decomposeTarget, setDecomposeTarget] = useState(null); // {imgIdx, mergedImg, sourceImgs}
   const [autoSaveTime, setAutoSaveTime] = useState(null); // 最終自動保存時刻
@@ -1686,6 +2198,7 @@ function App() {
   const [showBcReview, setShowBcReview] = useState(false);
   const [showImageReloadDialog, setShowImageReloadDialog] = useState(false);
   const [pendingClassify, setPendingClassify] = useState(false);
+  const [pendingResort, setPendingResort] = useState(false); // 分解後の再並替トリガー
   const [bcReviewReady, setBcReviewReady] = useState(false);
   const [bcReviewIdx, setBcReviewIdx] = useState(0);
   // 初期ロード時にIndexedDBから復元（localStorage→IDB移行対応）
@@ -1780,6 +2293,7 @@ function App() {
     setMessage(`💾 手動保存しました（${products.length}商品, Step ${step}）`);
   };
   // 画像復元: フォルダを再選択してfilename照合で画像を紐付け直す
+  // サブフォルダ構造（PC_001/xxx.jpg）とフラットDL構造（01_xxx.jpg）の両方に対応
   const reloadImagesFromFolder = async (runClassifyAfter = false) => {
     try {
       const dirHandle = await window.showDirectoryPicker({ mode: 'read' });
@@ -1787,97 +2301,310 @@ function App() {
       setMessage('📁 画像を再読み込み中...');
       let restored = 0, total = 0;
       const np = [...products];
-      const matchedFolders = new Set();
       
-      for (let pi = 0; pi < np.length; pi++) {
-        const p = np[pi];
-        if (!p.images || p.images.length === 0) continue;
-        let subDir = null;
-        try { subDir = await dirHandle.getDirectoryHandle(p.folder); } catch(e) {}
-        if (!subDir) continue;
-        matchedFolders.add(p.folder);
-        
-        const fileMap = {};
-        for await (const [name, handle] of subDir.entries()) {
-          if (handle.kind === 'file') fileMap[name] = handle;
+      // まずフォルダ内のファイル・サブフォルダを列挙
+      const topFiles = {}; // フラットファイル用
+      const subDirs = {};  // サブフォルダ用
+      for await (const [name, handle] of dirHandle.entries()) {
+        if (handle.kind === 'file' && /\.(jpe?g|png|webp|gif)$/i.test(name)) {
+          topFiles[name] = handle;
+        } else if (handle.kind === 'directory') {
+          subDirs[name] = handle;
+        }
+      }
+      
+      // サブフォルダ構造があるか判定
+      const hasSubfolders = np.some(p => subDirs[p.folder]);
+      
+      if (hasSubfolders) {
+        // === モード1: サブフォルダ構造（元の撮影フォルダ） ===
+        const matchedFolders = new Set();
+        for (let pi = 0; pi < np.length; pi++) {
+          const p = np[pi];
+          if (!p.images || p.images.length === 0) continue;
+          const subDir = subDirs[p.folder];
+          if (!subDir) continue;
+          matchedFolders.add(p.folder);
+          
+          const fileMap = {};
+          for await (const [name, handle] of subDir.entries()) {
+            if (handle.kind === 'file') fileMap[name] = handle;
+          }
+          
+          const newImages = [];
+          for (const img of p.images) {
+            total++;
+            const fh = fileMap[img.filename];
+            if (fh) {
+              try {
+                const file = await fh.getFile();
+                const dataUrl = await new Promise((res, rej) => {
+                  const r = new FileReader();
+                  r.onload = () => res(r.result);
+                  r.onerror = rej;
+                  r.readAsDataURL(file);
+                });
+                newImages.push({ ...img, dataUrl, thumbUrl: dataUrl });
+                restored++;
+              } catch(e) { newImages.push(img); }
+            } else {
+              newImages.push(img);
+            }
+          }
+          np[pi] = { ...p, images: newImages };
+          if (pi % 10 === 0) {
+            setMessage(`📁 画像を再読み込み中... ${pi+1}/${np.length} (${restored}枚復元)`);
+            setProducts([...np]);
+            await new Promise(r => setTimeout(r, 10));
+          }
         }
         
-        const newImages = [];
-        for (const img of p.images) {
-          total++;
-          const fh = fileMap[img.filename];
-          if (fh) {
+        // 削除済み商品の検出
+        let deletedCount = 0;
+        for (const [name, handle] of Object.entries(subDirs)) {
+          if (matchedFolders.has(name)) continue;
+          const imgs = [];
+          for await (const [fname, fhandle] of handle.entries()) {
+            if (fhandle.kind !== 'file' || !/\.(jpe?g|png|webp|gif)$/i.test(fname)) continue;
             try {
-              const file = await fh.getFile();
+              const file = await fhandle.getFile();
               const dataUrl = await new Promise((res, rej) => {
                 const r = new FileReader();
                 r.onload = () => res(r.result);
                 r.onerror = rej;
                 r.readAsDataURL(file);
               });
-              newImages.push({ ...img, dataUrl, thumbUrl: dataUrl });
-              restored++;
-            } catch(e) {
-              newImages.push(img);
-            }
-          } else {
-            newImages.push(img);
+              imgs.push({ id: `${name}_${fname}`, filename: fname, dataUrl, thumbUrl: dataUrl, excluded: false });
+            } catch(e) {}
+          }
+          if (imgs.length > 0) {
+            np.push({
+              id: name, folder: name,
+              images: imgs.sort((a, b) => a.filename.localeCompare(b.filename)),
+              barcode: null, status: 'deleted_from_original',
+              deletedNote: 'これは元のデータで消されています',
+            });
+            deletedCount++;
           }
         }
-        np[pi] = { ...p, images: newImages };
-        if (pi % 10 === 0) {
-          setMessage(`📁 画像を再読み込み中... ${pi+1}/${np.length} (${restored}枚復元)`);
-          setProducts([...np]);
-          await new Promise(r => setTimeout(r, 10));
+        if (deletedCount > 0) setMessage(prev => prev + ` / ⚠️ 削除済み ${deletedCount}件を末尾に追加`);
+        
+      } else {
+        // === モード2: フラットDL構造（画像DLでエクスポートしたファイル） ===
+        // ファイル名パターン: "01_元filename", "03__merged_xxx.jpg", "BC_元filename"
+        
+        // 全ファイルのプレフィクスを除去したマップ: stripped_name → fileHandle[]
+        const strippedMap = {};
+        const addToMap = (key, fname, handle) => {
+          if (!key) return;
+          if (!strippedMap[key]) strippedMap[key] = [];
+          strippedMap[key].push({ fname, handle });
+        };
+        for (const [fname, handle] of Object.entries(topFiles)) {
+          // "01_xxx" → "xxx", "BC_xxx" → "xxx", "BC2_xxx" → "xxx"
+          addToMap(fname.replace(/^\d{2}_/, ''), fname, handle);
+          addToMap(fname.replace(/^BC\d*_/, ''), fname, handle);
+          addToMap(fname, fname, handle); // 元名でもマッチ
         }
-      }
-      
-      // 削除済み商品の検出: フォルダにあるが復元データに無いもの
-      let deletedCount = 0;
-      for await (const [name, handle] of dirHandle.entries()) {
-        if (handle.kind !== 'directory' || matchedFolders.has(name)) continue;
-        // 未マッチフォルダ → 削除済み商品として追加
-        const imgs = [];
-        const subDir = await dirHandle.getDirectoryHandle(name);
-        for await (const [fname, fhandle] of subDir.entries()) {
-          if (fhandle.kind !== 'file' || !/\.(jpe?g|png|webp|gif)$/i.test(fname)) continue;
-          try {
-            const file = await fhandle.getFile();
-            const dataUrl = await new Promise((res, rej) => {
-              const r = new FileReader();
-              r.onload = () => res(r.result);
-              r.onerror = rej;
-              r.readAsDataURL(file);
-            });
-            imgs.push({ id: `${name}_${fname}`, filename: fname, dataUrl, thumbUrl: dataUrl, excluded: false });
-          } catch(e) {}
-        }
-        if (imgs.length > 0) {
-          np.push({
-            id: name, folder: name,
-            images: imgs.sort((a, b) => a.filename.localeCompare(b.filename)),
-            barcode: null, status: 'deleted_from_original',
-            deletedNote: 'これは元のデータで消されています',
-          });
-          deletedCount++;
+        
+        // 各商品の各画像に対して照合
+        const usedFiles = new Set();
+        for (let pi = 0; pi < np.length; pi++) {
+          const p = np[pi];
+          if (!p.images || p.images.length === 0) continue;
+          
+          const newImages = [];
+          for (const img of p.images) {
+            total++;
+            const isBC = img.isBarcode || img.category === 'barcode';
+            // filename完全一致 → stripped一致 → DL名試行
+            const candidates = strippedMap[img.filename] || [];
+            let matched = null;
+            for (const c of candidates) {
+              if (!usedFiles.has(c.fname)) { matched = c; break; }
+            }
+            // DL名で試行: NN_filename or BC_filename
+            if (!matched) {
+              if (isBC) {
+                // BC画像: BC_filename, BC2_filename
+                for (const prefix of ['BC_', 'BC2_', 'BC3_']) {
+                  const dlName = `${prefix}${img.filename}`;
+                  if (topFiles[dlName] && !usedFiles.has(dlName)) {
+                    matched = { fname: dlName, handle: topFiles[dlName] };
+                    break;
+                  }
+                }
+              } else {
+                for (let tryIdx = 0; tryIdx < 20; tryIdx++) {
+                  const dlName = `${String(tryIdx + 1).padStart(2, '0')}_${img.filename}`;
+                  if (topFiles[dlName] && !usedFiles.has(dlName)) {
+                    matched = { fname: dlName, handle: topFiles[dlName] };
+                    break;
+                  }
+                }
+              }
+            }
+            
+            if (matched) {
+              try {
+                const file = await matched.handle.getFile();
+                const dataUrl = await new Promise((res, rej) => {
+                  const r = new FileReader();
+                  r.onload = () => res(r.result);
+                  r.onerror = rej;
+                  r.readAsDataURL(file);
+                });
+                newImages.push({ ...img, dataUrl, thumbUrl: dataUrl });
+                usedFiles.add(matched.fname);
+                restored++;
+              } catch(e) { newImages.push(img); }
+            } else {
+              newImages.push(img);
+            }
+          }
+          np[pi] = { ...p, images: newImages };
+          if (pi % 10 === 0) {
+            setMessage(`📁 フラット画像復元中... ${pi+1}/${np.length} (${restored}枚復元)`);
+            setProducts([...np]);
+            await new Promise(r => setTimeout(r, 10));
+          }
         }
       }
       
       setProducts(np);
       setLoading(false);
       let msg = `✅ 画像復元完了: ${restored}/${total}枚`;
-      if (deletedCount > 0) msg += ` / ⚠️ 削除済み ${deletedCount}件を末尾に追加`;
+      const noBc = np.filter(p => !p.barcode);
+      if (noBc.length > 0) msg += ` / ⚠️ BC未取得: ${noBc.length}件（🔖 BC補填で復元可能）`;
+      if (restored === 0 && total > 0) msg += `\n⚠️ 一致なし。元の撮影フォルダか画像DLフォルダを選択してください`;
       setMessage(msg);
       
-      if (runClassifyAfter || confirm('画像処理（分類・並替・BC読取）を実行しますか？\n※スペック・価格・タイトルは維持されます')) {
-        setStep(2);
-        setPendingClassify(true);
+      if (restored > 0) {
+        const csvRestored = np.some(p => p.title && p.description);
+        if (csvRestored) {
+          // 紹介文・タイトル・説明文が既にある → Step4に直行
+          setStep(4);
+          setMessage(`✅ 画像復元完了: ${restored}/${total}枚 → プレビューへ直行`);
+        } else if (runClassifyAfter || confirm('画像処理（分類・並替）を実行しますか？\n※スペック・価格・タイトル・BCは維持されます')) {
+          setStep(2);
+          setPendingClassify('skipBc');
+        }
       }
     } catch(e) {
       if (e.name !== 'AbortError') console.error('画像復元エラー:', e);
       setLoading(false);
       setMessage('');
     }
+  };
+  // BC補填コアロジック（渡されたtargetsに直接操作、closureのproductsに依存しない）
+  const _restoreBcInline = async (origDir, targets) => {
+    let bcRestored = 0;
+    const readFileAsDataUrl = (fh) => fh.getFile().then(file => new Promise((res, rej) => {
+      const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file);
+    }));
+    
+    // フォルダ構造判定
+    const topFiles = {};
+    const subDirs = {};
+    for await (const [name, handle] of origDir.entries()) {
+      if (handle.kind === 'file' && /\.(jpe?g|png|webp|gif)$/i.test(name)) topFiles[name] = handle;
+      else if (handle.kind === 'directory') subDirs[name] = handle;
+    }
+    const hasSubfolders = targets.some(p => subDirs[p.folder]);
+    const topFilesSorted = Object.entries(topFiles).sort((a, b) => a[0].localeCompare(b[0]));
+    
+    for (let ti = 0; ti < targets.length; ti++) {
+      const p = targets[ti];
+      setMessage(`📁 BC補填中... ${ti+1}/${targets.length} (${p.folder})`);
+      
+      let allFiles = [];
+      if (hasSubfolders) {
+        let subDir = null;
+        try { subDir = await origDir.getDirectoryHandle(p.folder); } catch(e) {}
+        if (!subDir) continue;
+        for await (const [name, handle] of subDir.entries()) {
+          if (handle.kind === 'file' && /\.(jpe?g|png|webp|gif)$/i.test(name)) allFiles.push({ name, handle });
+        }
+      } else {
+        const origImages = p.images.filter(img => !img.id?.startsWith('merged_') && !img.id?.startsWith('bc_recovered_'));
+        const origSorted = [...origImages].sort((a, b) => (a.id || '').localeCompare(b.id || ''));
+        for (const img of origSorted) {
+          const fh = topFiles[img.filename] || topFiles[img.id];
+          if (fh) allFiles.push({ name: img.filename || img.id, handle: fh });
+        }
+        if (allFiles.length === 0 && origSorted.length > 0 && topFilesSorted.length > 0) {
+          const firstId = origSorted[0].id || '';
+          let startIdx = topFilesSorted.findIndex(([name]) => name >= firstId);
+          if (startIdx < 0) startIdx = 0;
+          allFiles = topFilesSorted.slice(startIdx, startIdx + origSorted.length).map(([name, handle]) => ({ name, handle }));
+        }
+      }
+      allFiles.sort((a, b) => a.name.localeCompare(b.name));
+      if (allFiles.length === 0) continue;
+      
+      // Step 1: filename照合
+      const bcImgs = p.images.filter(img => (img.isBarcode || img.category === 'barcode') && !img.dataUrl);
+      for (const bcImg of bcImgs) {
+        const match = allFiles.find(f => f.name === bcImg.filename) || allFiles.find(f => f.name === bcImg.id);
+        if (match) { try { bcImg.dataUrl = await readFileAsDataUrl(match.handle); bcImg.thumbUrl = bcImg.dataUrl; } catch(e) {} }
+      }
+      // Step 2: 並び順照合
+      const bcNoData = p.images.filter(img => (img.isBarcode || img.category === 'barcode') && !img.dataUrl);
+      if (bcNoData.length > 0) {
+        const origSorted = p.images.filter(img => !img.id?.startsWith('merged_') && !img.id?.startsWith('bc_recovered_'))
+          .sort((a, b) => (a.id || '').localeCompare(b.id || ''));
+        for (const bcImg of bcNoData) {
+          const idx = origSorted.indexOf(bcImg);
+          if (idx >= 0 && idx < allFiles.length) {
+            try { bcImg.dataUrl = await readFileAsDataUrl(allFiles[idx].handle); bcImg.thumbUrl = bcImg.dataUrl; bcImg.filename = allFiles[idx].name; } catch(e) {}
+          }
+        }
+      }
+      // OCR
+      const bcWithData = p.images.find(img => (img.isBarcode || img.category === 'barcode') && img.dataUrl);
+      if (bcWithData && !p.barcode && apiKey) {
+        try { const bc = await ocrBarcode(apiKey, bcWithData.dataUrl); if (bc) { p.barcode = bc; bcRestored++; continue; } } catch(e) {}
+      }
+      // Step 3: 末尾3枚OCR
+      if (!p.barcode && apiKey) {
+        for (let fi = allFiles.length - 1; fi >= Math.max(0, allFiles.length - 3); fi--) {
+          try {
+            const dataUrl = await readFileAsDataUrl(allFiles[fi].handle);
+            const bc = await ocrBarcode(apiKey, dataUrl);
+            if (bc) {
+              p.barcode = bc;
+              p.images.push({ id: `bc_recovered_${allFiles[fi].name}`, filename: allFiles[fi].name, dataUrl, thumbUrl: dataUrl, excluded: false, isBarcode: true, category: 'barcode' });
+              bcRestored++;
+              break;
+            }
+          } catch(e) {}
+        }
+      }
+    }
+    return bcRestored;
+  };
+  // BC画像補填: 元撮影フォルダからBC画像を取得してOCR（手動ボタン用）
+  const restoreBcFromFolder = async () => {
+    let origDir;
+    try {
+      origDir = await window.showDirectoryPicker({ mode: 'read' });
+    } catch(e) { return 0; }
+    
+    setLoading(true);
+    const targets = products.filter(p => !p.barcode);
+    const bcRestored = await _restoreBcInline(origDir, targets);
+    
+    // functional setStateで最新状態にマージ
+    setProducts(prev => prev.map(p => {
+      const updated = targets.find(t => t.folder === p.folder);
+      return updated ? { ...p, barcode: updated.barcode, images: updated.images } : p;
+    }));
+    setLoading(false);
+    const finalNoBc = targets.filter(p => !p.barcode);
+    let msg = `🔖 BC補填完了: ${bcRestored}件復元`;
+    if (finalNoBc.length > 0) msg += ` / ⚠️ 残り${finalNoBc.length}件未取得 (${finalNoBc.map(p => p.folder).join(', ')})`;
+    setMessage(msg);
+    return bcRestored;
   };
   // データクリア関数
   const clearSavedData = () => {
@@ -2304,6 +3031,8 @@ function App() {
       
       // APIキーがあればAI処理を自動実行（バックグラウンド）
       if (apiKey) {
+        const mergeMsg = pcMode === 'desktop' ? '画像を自動結合しますか？\n\nOK → SPEC/SIDE画像を1枚に結合（枚数節約）\nキャンセル → 結合なし（最大20枚そのまま）' : '画像を自動結合しますか？\n\nOK → INFO/KEY/SIDE画像を1枚に結合（枚数節約）\nキャンセル → 結合なし（最大20枚そのまま）'; const doMerge = confirm(mergeMsg);
+        setAutoMergeAll(doMerge);
         setMessage(`🔄 AI処理開始（${prods.length}商品）...`);
         const t0ai = Date.now();
         for (let i = 0; i < prods.length; i++) {
@@ -2322,60 +3051,10 @@ function App() {
           if (allActive.length >= 3 && claudeKey) {
             try {
               setMessage(`🤖 分類＆並替 ${i+1}/${prods.length}`);
-              const classResult = await classifyImages(claudeKey, allActive);
+              const classifyFn = pcMode === 'desktop' ? classifyImagesDesktop : classifyImages;
+              const classResult = await classifyFn(claudeKey, allActive);
               if (classResult) {
-                const { results: classifications, condition, notes } = classResult;
-                p.condition = condition || 3;
-                p.conditionNotes = (condition && condition >= 4 && notes) ? notes : '';
-                const byCategory = { main: [], keyboard: [], side: [], info: [], barcode: [], other: [] };
-                classifications.forEach(c => {
-                  const img = allActive[c.index];
-                  if (!img) return;
-                  const cat = (c.category === 'screen' || c.category === 'battery' || c.category === 'spec') ? 'info' : c.category;
-                  img.category = byCategory[cat] ? cat : 'other';
-                  if (byCategory[cat]) byCategory[cat].push(img);
-                  else byCategory.other.push(img);
-                });
-                const sorted = [];
-                const mergedSrcIds = new Set();
-                const mergeAndPush = async (imgs, name) => {
-                  if (imgs.length >= 2) {
-                    const { dataUrl, filename } = await mergeImages(imgs, 2);
-                    sorted.push({ id: `merged_${Date.now()}_${name}`, filename, dataUrl, excluded: false, category: name });
-                    imgs.forEach(img => mergedSrcIds.add(img.id));
-                  } else { sorted.push(...imgs); }
-                };
-                // main(2) → info(結合) → keyboard(結合) → side(結合) → other
-                sorted.push(...byCategory.main.slice(0, 2));
-                if (byCategory.main.length > 2) byCategory.other.push(...byCategory.main.slice(2));
-                if (byCategory.info.length >= 2) { await mergeAndPush(byCategory.info.slice(0, 4), 'info'); if (byCategory.info.length > 4) byCategory.other.push(...byCategory.info.slice(4)); }
-                else { sorted.push(...byCategory.info); }
-                if (byCategory.keyboard.length >= 2) { await mergeAndPush(byCategory.keyboard.slice(0, 4), 'keyboard'); if (byCategory.keyboard.length > 4) byCategory.other.push(...byCategory.keyboard.slice(4)); }
-                else { sorted.push(...byCategory.keyboard); }
-                if (byCategory.side.length >= 2) {
-                  await mergeAndPush(byCategory.side.slice(0, 4), 'side');
-                  if (byCategory.side.length > 4) byCategory.other.push(...byCategory.side.slice(4));
-                } else { sorted.push(...byCategory.side); }
-                sorted.push(...byCategory.other);
-                byCategory.barcode.forEach(img => img.isBarcode = true);
-                sorted.push(...byCategory.barcode);
-                // BC補正: barcode=0枚かつinfo画像がある場合、infoでOCR試行→読めたらbarcodeに変更
-                if (byCategory.barcode.length === 0 && byCategory.info.length > 0 && apiKey && !p.barcode) {
-                  for (const infoImg of byCategory.info) {
-                    try {
-                      const bc = await ocrBarcode(apiKey, infoImg.dataUrl);
-                      if (bc) {
-                        infoImg.isBarcode = true;
-                        infoImg.category = 'barcode';
-                        p.barcode = bc;
-                        console.log(`🔄 INFO→BC補正: ${p.folder} (${bc})`);
-                        break;
-                      }
-                    } catch(e) {}
-                  }
-                }
-                const excludedImgs = p.images.filter(img => img.excluded || mergedSrcIds.has(img.id)).map(img => ({ ...img, excluded: true }));
-                p.images = [...sorted, ...excludedImgs];
+                await sortClassifiedImages(p, allActive, classResult, pcMode, autoMergeRef.current, apiKey);
               }
             } catch(e) { console.error('⚠️ 分類エラー:', e); setMessage(`⚠️ 分類失敗(${p.folder || i}): ${e.message?.slice(0,50)}`); }
           }
@@ -2547,6 +3226,8 @@ function App() {
     });
     
     if (apiKey) {
+      const mergeMsg = pcMode === 'desktop' ? '画像を自動結合しますか？\n\nOK → SPEC/SIDE画像を1枚に結合（枚数節約）\nキャンセル → 結合なし（最大20枚そのまま）' : '画像を自動結合しますか？\n\nOK → INFO/KEY/SIDE画像を1枚に結合（枚数節約）\nキャンセル → 結合なし（最大20枚そのまま）'; const doMerge = confirm(mergeMsg);
+      setAutoMergeAll(doMerge);
       const total = prods.length;
       setMessage(`🔄 AI処理開始（${total}商品）`);
       const t0 = Date.now();
@@ -2590,66 +3271,10 @@ function App() {
         if (allActive.length >= 3 && claudeKey) {
           try {
             setMessage(`🤖 分類 ${i+1}/${total} ${fmtEta(i, total, t0)}`);
-            const classResult = await classifyImages(claudeKey, allActive);
+            const classifyFn = pcMode === 'desktop' ? classifyImagesDesktop : classifyImages;
+            const classResult = await classifyFn(claudeKey, allActive);
             if (classResult) {
-          
-          const { results: classifications, condition, notes } = classResult;
-          p.condition = condition || 3;
-          p.conditionNotes = (condition && condition >= 4 && notes) ? notes : '';
-          
-          const byCategory = { main: [], keyboard: [], side: [], info: [], barcode: [], other: [] };
-          classifications.forEach(c => {
-            const img = allActive[c.index];
-            if (!img) return;
-            // screen/battery → info に統合
-            const cat = (c.category === 'screen' || c.category === 'battery' || c.category === 'spec') ? 'info' : c.category;
-            img.category = byCategory[cat] ? cat : 'other';
-            if (byCategory[cat]) byCategory[cat].push(img);
-            else byCategory.other.push(img);
-          });
-          
-          const sorted = [];
-          const mergedSrcIds = new Set();
-          const mergeAndPush = async (imgs, name) => {
-            if (imgs.length >= 2) {
-              const { dataUrl, filename } = await mergeImages(imgs, 2);
-              sorted.push({ id: `merged_${Date.now()}_${name}`, filename, dataUrl, excluded: false, category: name });
-              imgs.forEach(img => mergedSrcIds.add(img.id));
-            } else { sorted.push(...imgs); }
-          };
-          
-          // main(2) → info(結合) → keyboard(結合) → side(結合) → other
-          sorted.push(...byCategory.main.slice(0, 2));
-          if (byCategory.main.length > 2) byCategory.other.push(...byCategory.main.slice(2));
-          if (byCategory.info.length >= 2) { await mergeAndPush(byCategory.info.slice(0, 4), 'info'); if (byCategory.info.length > 4) byCategory.other.push(...byCategory.info.slice(4)); }
-          else { sorted.push(...byCategory.info); }
-          if (byCategory.keyboard.length >= 2) { await mergeAndPush(byCategory.keyboard.slice(0, 4), 'keyboard'); if (byCategory.keyboard.length > 4) byCategory.other.push(...byCategory.keyboard.slice(4)); }
-          else { sorted.push(...byCategory.keyboard); }
-          if (byCategory.side.length >= 2) {
-            await mergeAndPush(byCategory.side.slice(0, 4), 'side');
-            if (byCategory.side.length > 4) byCategory.other.push(...byCategory.side.slice(4));
-          } else { sorted.push(...byCategory.side); }
-          sorted.push(...byCategory.other);
-          byCategory.barcode.forEach(img => img.isBarcode = true);
-          sorted.push(...byCategory.barcode);
-          // BC補正: barcode=0枚かつinfo画像がある場合、infoでOCR試行
-          if (byCategory.barcode.length === 0 && byCategory.info.length > 0 && apiKey && !p.barcode) {
-            for (const infoImg of byCategory.info) {
-              try {
-                const bc = await ocrBarcode(apiKey, infoImg.dataUrl);
-                if (bc) {
-                  infoImg.isBarcode = true;
-                  infoImg.category = 'barcode';
-                  p.barcode = bc;
-                  console.log(`🔄 INFO→BC補正: ${p.folder} (${bc})`);
-                  break;
-                }
-              } catch(e) {}
-            }
-          }
-          
-          const excludedImgs = p.images.filter(img => img.excluded || mergedSrcIds.has(img.id)).map(img => ({ ...img, excluded: true }));
-          p.images = [...sorted, ...excludedImgs];
+              await sortClassifiedImages(p, allActive, classResult, pcMode, autoMergeRef.current, apiKey);
             }
           } catch (e) { console.error(`分類エラー(${i+1}):`, e); }
         }
@@ -2671,7 +3296,13 @@ function App() {
     
     prods.forEach(p => { delete p._bcPhotoIdx; delete p._sorted; });
     
-    setProducts([...prods]);
+    // 一時フラグのみクリーンアップ（ユーザー操作を上書きしない）
+    setProducts(prev => prev.map(p => {
+      const cleaned = { ...p };
+      delete cleaned._bcPhotoIdx;
+      delete cleaned._sorted;
+      return cleaned;
+    }));
     setSorterMode(false);
     setMessage(doneMsg || `✅ ${prods.length}商品に振り分け完了`);
     setBcReviewReady(true);
@@ -2710,9 +3341,62 @@ function App() {
       // 2. カテゴリ別に分類
       const active = restored.filter(img => !img.excluded);
       const excluded = restored.filter(img => img.excluded);
+      
+      if (pcMode === 'desktop') {
+        // デスクトップPC: front(1枚) → spec → interior → back → side → other → barcode
+        const byCategory = { spec: [], front: [], interior: [], back: [], side: [], barcode: [], other: [] };
+        active.forEach(img => {
+          let cat = img.category || 'other';
+          if (cat === 'barcode' && img.isBarcode === false) cat = 'other';
+          // notebook→desktop互換: info/screen/battery→spec, main→front, keyboard→other
+          if (cat === 'info' || cat === 'screen' || cat === 'battery') cat = 'spec';
+          if (cat === 'main') cat = 'front';
+          if (cat === 'keyboard') cat = 'other';
+          if (byCategory[cat]) byCategory[cat].push(img);
+          else byCategory.other.push(img);
+        });
+        // 3. 並替＆結合
+        const sorted = [];
+        const mergedSrcIds = new Set();
+        const mergeAndPush = async (imgs, name) => {
+          if (!autoMergeRef.current) { sorted.push(...imgs); return; }
+          if (imgs.length >= 2) {
+            const { dataUrl, filename } = await mergeImages(imgs, 2);
+            sorted.push({ id: `merged_${Date.now()}_${name}`, filename, dataUrl, excluded: false, category: name });
+            imgs.forEach(img => mergedSrcIds.add(img.id));
+          } else { sorted.push(...imgs); }
+        };
+        sorted.push(...byCategory.front.slice(0, 1));
+        if (byCategory.front.length > 1) byCategory.other.push(...byCategory.front.slice(1));
+        if (byCategory.spec.length >= 2) { await mergeAndPush(byCategory.spec.slice(0, 4), 'spec'); if (byCategory.spec.length > 4) byCategory.other.push(...byCategory.spec.slice(4)); }
+        else { sorted.push(...byCategory.spec); }
+        sorted.push(...byCategory.interior.slice(0, 3));
+        if (byCategory.interior.length > 3) byCategory.other.push(...byCategory.interior.slice(3));
+        sorted.push(...byCategory.back.slice(0, 2));
+        if (byCategory.back.length > 2) byCategory.other.push(...byCategory.back.slice(2));
+        if (byCategory.side.length >= 2) { await mergeAndPush(byCategory.side.slice(0, 8), 'side'); if (byCategory.side.length > 8) byCategory.other.push(...byCategory.side.slice(8)); }
+        else { sorted.push(...byCategory.side); }
+        sorted.push(...byCategory.other);
+        sorted.forEach(img => img.isBarcode = false);
+        byCategory.barcode.forEach((img, bi) => { if (bi === 0) { img.isBarcode = true; } else { img.isBarcode = false; img.category = 'other'; sorted.push(img); } });
+        byCategory.barcode = byCategory.barcode.slice(0, 1);
+        sorted.push(...byCategory.barcode);
+        if (byCategory.barcode.length === 0 && byCategory.spec.length > 0 && apiKey && !np[idx].barcode) {
+          for (const specImg of byCategory.spec) {
+            try {
+              const bc = await ocrBarcode(apiKey, specImg.dataUrl);
+              if (bc) { specImg.isBarcode = true; specImg.category = 'barcode'; np[idx].barcode = bc; break; }
+            } catch(e) {}
+          }
+        }
+        const newExcluded = restored.filter(img => mergedSrcIds.has(img.id) || (img.excluded && !mergedSrcIds.has(img.id))).map(img => ({ ...img, excluded: true }));
+        np[idx].images = [...sorted, ...newExcluded];
+      } else {
+      // ノートPC: main → info → keyboard → side → other → barcode
       const byCategory = { main: [], keyboard: [], side: [], info: [], barcode: [], other: [] };
       active.forEach(img => {
-        const cat = img.category || 'other';
+        let cat = img.category || 'other';
+        if (cat === 'barcode' && img.isBarcode === false) cat = 'other'; // ユーザーBC解除を尊重
         if (byCategory[cat]) byCategory[cat].push(img);
         else byCategory.other.push(img);
       });
@@ -2721,6 +3405,7 @@ function App() {
       const sorted = [];
       const mergedSrcIds = new Set();
       const mergeAndPush = async (imgs, name) => {
+                  if (!autoMergeRef.current) { sorted.push(...imgs); return; }
         if (imgs.length >= 2) {
           const { dataUrl, filename } = await mergeImages(imgs, 2);
           sorted.push({ id: `merged_${Date.now()}_${name}`, filename, dataUrl, excluded: false, category: name });
@@ -2733,10 +3418,10 @@ function App() {
       else { sorted.push(...byCategory.info); }
       if (byCategory.keyboard.length >= 2) { await mergeAndPush(byCategory.keyboard.slice(0, 4), 'keyboard'); if (byCategory.keyboard.length > 4) byCategory.other.push(...byCategory.keyboard.slice(4)); }
       else { sorted.push(...byCategory.keyboard); }
-      if (byCategory.side.length >= 2) { await mergeAndPush(byCategory.side.slice(0, 4), 'side'); if (byCategory.side.length > 4) byCategory.other.push(...byCategory.side.slice(4)); }
+      if (byCategory.side.length >= 2) { await mergeAndPush(byCategory.side.slice(0, 8), 'side'); if (byCategory.side.length > 8) byCategory.other.push(...byCategory.side.slice(8)); }
       else { sorted.push(...byCategory.side); }
       sorted.push(...byCategory.other);
-      byCategory.barcode.forEach(img => img.isBarcode = true);
+      sorted.forEach(img => img.isBarcode = false); byCategory.barcode.forEach((img, bi) => { if (bi === 0) { img.isBarcode = true; } else { img.isBarcode = false; img.category = 'other'; sorted.push(img); } }); byCategory.barcode = byCategory.barcode.slice(0, 1);
       sorted.push(...byCategory.barcode);
       // BC補正
       if (byCategory.barcode.length === 0 && byCategory.info.length > 0 && apiKey && !np[idx].barcode) {
@@ -2750,8 +3435,9 @@ function App() {
       
       const newExcluded = restored.filter(img => mergedSrcIds.has(img.id) || (img.excluded && !mergedSrcIds.has(img.id))).map(img => ({ ...img, excluded: true }));
       np[idx].images = [...sorted, ...newExcluded];
+      }
       setProducts(np);
-      setMessage(`✅ カテゴリで再並替完了（${sorted.length}枚）`);
+      setMessage(`✅ カテゴリで再並替完了（${np[idx].images.filter(img => !img.excluded).length}枚）`);
     } catch (e) {
       console.error('resortByCategory error:', e);
       setMessage(`❌ 再並替エラー: ${e.message}`);
@@ -2759,9 +3445,17 @@ function App() {
     setLoading(false);
   };
   // AI再処理（エラー中断後の再開用 / 未処理商品のみ）
-  const aiReprocess = async () => {
+  const aiReprocess = async (skipBc = false) => {
     if (!apiKey) return setMessage('❌ OpenAI APIキー未設定');
     if (!claudeKey) return setMessage('❌ Claude APIキー未設定（画像分類に必要）');
+    
+    // 画像データがあるか確認（復元済みか）
+    const hasImageData = products.some(p => p.images.some(img => img.dataUrl));
+    if (!hasImageData) {
+      setLoading(false);
+      setMessage('⚠️ 画像未読込 → 先に「📁 画像復元」ボタンでフォルダを選択してください');
+      return;
+    }
     setLoading(true);
     const total = products.length;
     const t0 = Date.now();
@@ -2774,124 +3468,89 @@ function App() {
       return remaining < 60 ? `残り約${remaining}秒` : `残り約${Math.ceil(remaining/60)}分`;
     };
     
-    const np = [...products];
-    let processed = 0;
+    // スナップショット（処理対象判定＆画像データ読取用）
+    const snapshot = products.map(p => ({
+      barcode: p.barcode,
+      images: p.images.map(img => ({ ...img })), // deep copy images
+      folder: p.folder,
+    }));
     
-    for (let i = 0; i < np.length; i++) {
-      const p = np[i];
+    let processed = 0;
+    let bcFailList = [];
+    
+    for (let i = 0; i < total; i++) {
+      const snap = snapshot[i];
+      if (!snap) continue;
       
-      // OCR未完了
-      if (!p.barcode) {
-        const allActive = p.images.filter(img => !img.excluded);
+      let updates = {}; // このイテレーションで変更されたフィールドのみ
+      
+      // OCR未完了（skipBcの場合はスキップ）
+      if (!snap.barcode && !skipBc) {
+        const allActive = snap.images.filter(img => !img.excluded);
         const bcImg = allActive.find(img => img.isBarcode || img.category === 'barcode');
-        if (bcImg) {
+        if (bcImg && bcImg.dataUrl) {
           try {
             setMessage(`📷 BC再読取... ${i+1}/${total} ${fmtEta(processed, total, t0)}`);
             const bc = await ocrBarcode(apiKey, bcImg.dataUrl);
-            if (bc) p.barcode = bc;
+            if (bc) updates.barcode = bc;
           } catch (e) { console.error('OCRエラー:', e); }
         }
       }
       
-      // merged済み（分類完了）の商品は再分類しない。手動で🔓分解→🔀再並替を使う
-      const hasMerged = p.images.some(img => img.id?.startsWith('merged_'));
-      const hasCategories = p.images.some(img => img.category);
+      // merged済み（分類完了）の商品は再分類しない
+      const hasMerged = snap.images.some(img => img.id?.startsWith('merged_'));
+      const hasCategories = snap.images.some(img => img.category);
+      const activeImgs = snap.images.filter(img => !img.excluded);
       
-      // 未分類の商品のみAI分類
-      const activeImgs = p.images.filter(img => !img.excluded);
       if (!hasMerged && !hasCategories && activeImgs.length > 1) {
         try {
           setMessage(`🤖 分類＆並替... ${i+1}/${total} ${fmtEta(processed, total, t0)}`);
-          const classResult = await classifyImages(claudeKey, activeImgs);
+          const classifyFn = pcMode === 'desktop' ? classifyImagesDesktop : classifyImages;
+          const classResult = await classifyFn(claudeKey, activeImgs);
           if (classResult) {
-            const { results: classifications, condition, notes } = classResult;
-            p.condition = condition || 3;
-            p.conditionNotes = (condition && condition >= 4 && notes) ? notes : '';
-            const byCategory = { main: [], keyboard: [], side: [], info: [], barcode: [], other: [] };
-            classifications.forEach(c => {
-              const img = activeImgs[c.index];
-              if (!img) return;
-              const cat = (c.category === 'screen' || c.category === 'battery' || c.category === 'spec') ? 'info' : c.category;
-              img.category = byCategory[cat] ? cat : 'other';
-              if (byCategory[cat]) byCategory[cat].push(img);
-              else byCategory.other.push(img);
-            });
-            const sorted = [];
-            const mergedSrcIds = new Set();
-            const mergeAndPush = async (imgs, name) => {
-              if (imgs.length >= 2) {
-                const { dataUrl, filename } = await mergeImages(imgs, 2);
-                sorted.push({ id: `merged_${Date.now()}_${name}`, filename, dataUrl, excluded: false, category: name });
-                imgs.forEach(img => mergedSrcIds.add(img.id));
-              } else { sorted.push(...imgs); }
-            };
-            // main(2) → info(結合) → keyboard(結合) → side(結合) → other
-            sorted.push(...byCategory.main.slice(0, 2));
-            if (byCategory.main.length > 2) byCategory.other.push(...byCategory.main.slice(2));
-            if (byCategory.info.length >= 2) { await mergeAndPush(byCategory.info.slice(0, 4), 'info'); if (byCategory.info.length > 4) byCategory.other.push(...byCategory.info.slice(4)); }
-            else { sorted.push(...byCategory.info); }
-            if (byCategory.keyboard.length >= 2) { await mergeAndPush(byCategory.keyboard.slice(0, 4), 'keyboard'); if (byCategory.keyboard.length > 4) byCategory.other.push(...byCategory.keyboard.slice(4)); }
-            else { sorted.push(...byCategory.keyboard); }
-            if (byCategory.side.length >= 2) {
-              await mergeAndPush(byCategory.side.slice(0, 4), 'side');
-              if (byCategory.side.length > 4) byCategory.other.push(...byCategory.side.slice(4));
-            } else { sorted.push(...byCategory.side); }
-            sorted.push(...byCategory.other);
-            byCategory.barcode.forEach(img => img.isBarcode = true);
-            sorted.push(...byCategory.barcode);
-            // BC補正
-            if (byCategory.barcode.length === 0 && byCategory.info.length > 0 && apiKey && !p.barcode) {
-              for (const infoImg of byCategory.info) {
-                try {
-                  const bc = await ocrBarcode(apiKey, infoImg.dataUrl);
-                  if (bc) { infoImg.isBarcode = true; infoImg.category = 'barcode'; p.barcode = bc; break; }
-                } catch(e) {}
-              }
-            }
-            const excludedImgs = p.images.filter(img => img.excluded || mergedSrcIds.has(img.id)).map(img => ({ ...img, excluded: true }));
-            p.images = [...sorted, ...excludedImgs];
+            // sortClassifiedImages用に一時オブジェクトを作成
+            const tempP = { images: [...snap.images], barcode: snap.barcode || updates.barcode };
+            await sortClassifiedImages(tempP, activeImgs, classResult, pcMode, autoMergeRef.current, skipBc ? null : apiKey);
+            updates.condition = tempP.condition;
+            updates.conditionNotes = tempP.conditionNotes;
+            if (tempP.barcode && tempP.barcode !== snap.barcode) updates.barcode = tempP.barcode;
+            updates.images = tempP.images;
           }
-        } catch (e) { console.error('⚠️ 分類エラー:', e); setMessage(`⚠️ 分類失敗(${p.folder || i}): ${e.message?.slice(0,50)}`); }
+        } catch (e) { console.error('⚠️ 分類エラー:', e); setMessage(`⚠️ 分類失敗(${snap.folder || i}): ${e.message?.slice(0,50)}`); }
       }
-      p._aiProcessed = true;
+      
+      // 変更があった商品だけ即反映（他商品のユーザー操作を一切上書きしない）
+      if (Object.keys(updates).length > 0) {
+        const idx = i;
+        setProducts(prev => prev.map((prod, j) => j === idx ? { ...prod, ...updates } : prod));
+      }
+      
+      if (!skipBc && !snap.barcode && !updates.barcode) bcFailList.push(snap.folder);
       processed++;
     }
     
-    // AI処理結果をマージ（ユーザーの手動変更を保持）
-    setProducts(prev => {
-      const merged = prev.map((p, j) => {
-        if (j < np.length && np[j]._aiProcessed) {
-          // AI処理済み: npの結果を使うが、ユーザーが変更したexcludedフラグは保持
-          const aiProduct = { ...np[j] };
-          delete aiProduct._aiProcessed;
-          // prevで除外変更があればマージ
-          const prevExcluded = new Set(prev[j].images.filter(img => img.excluded).map(img => img.id));
-          const npExcluded = new Set(np[j].images.filter(img => img.excluded).map(img => img.id));
-          if (JSON.stringify([...prevExcluded].sort()) !== JSON.stringify([...npExcluded].sort())) {
-            // ユーザーがexcludedを変更した → prevのimagesを保持
-            aiProduct.images = prev[j].images;
-          }
-          return aiProduct;
-        }
-        return p; // AI未処理: ユーザーの変更そのまま
-      });
-      return merged;
-    });
     setLoading(false);
     const elapsed = Math.round((Date.now() - t0) / 1000);
-    const bcFail = np.filter(p => !p.barcode).map(p => p.folder);
     let reMsg = `✅ AI再処理完了（${elapsed}秒）`;
-    if (bcFail.length > 0) reMsg += `\n⚠️ BC読取失敗(${bcFail.length}件): ${bcFail.slice(0, 20).join(', ')}${bcFail.length > 20 ? '...' : ''}`;
+    if (bcFailList.length > 0) reMsg += `\n⚠️ BC読取失敗(${bcFailList.length}件): ${bcFailList.slice(0, 20).join(', ')}${bcFailList.length > 20 ? '...' : ''}`;
     setMessage(reMsg);
     setBcReviewReady(true);
   };
   // 画像復元後の自動分類トリガー
   useEffect(() => {
     if (pendingClassify && step === 2 && products.length > 0 && !loading) {
+      const skipBc = pendingClassify === 'skipBc';
       setPendingClassify(false);
-      aiReprocess();
+      aiReprocess(skipBc);
     }
   }, [pendingClassify, step, products, loading]);
+  // 分解後の自動再並替
+  useEffect(() => {
+    if (pendingResort && !loading) {
+      setPendingResort(false);
+      resortByCategory();
+    }
+  }, [pendingResort, loading]);
   // OCR
   // バーコード画像を見つけるヘルパー
   const findBarcodeImage = (p) => {
@@ -2929,16 +3588,16 @@ function App() {
     if (!apiKey) return alert('APIキーを設定してください');
     setLoading(true);
     let successCount = 0;
-    for (let i = 0; i < products.length; i++) {
-      if (products[i].barcode) continue;
+    const snapshot = products.map(p => ({ barcode: p.barcode, images: p.images }));
+    for (let i = 0; i < snapshot.length; i++) {
+      if (snapshot[i].barcode) continue;
       try {
-        setMessage(`OCR中... ${i+1}/${products.length}`);
-        const bcImg = findBarcodeImage(products[i]);
+        setMessage(`OCR中... ${i+1}/${snapshot.length}`);
+        const bcImg = findBarcodeImage(snapshot[i]);
         const bc = await ocrBarcode(apiKey, bcImg.dataUrl);
         if (bc) {
-          const np = [...products];
-          np[i].barcode = bc;
-          setProducts(np);
+          const idx = i;
+          setProducts(prev => prev.map((p, j) => j === idx ? { ...p, barcode: bc } : p));
           successCount++;
         }
       } catch (e) {
@@ -2948,19 +3607,60 @@ function App() {
     setMessage(`OCR完了: ${successCount}件成功`);
     setLoading(false);
   };
-  // 画像並び替え
-  const moveImage = (from, to) => {
-    if (from === to) return;
+  // 全商品スペックOCR再実行
+  const doSpecOcrAll = async () => {
+    if (!claudeKey && !apiKey) return setMessage('❌ APIキー未設定');
+    const specTargets = products.map((p, i) => ({
+      idx: i,
+      hasSpec: p.images.some(img => !img.excluded && (img.category === 'spec' || img.category === 'info'))
+    })).filter(t => t.hasSpec);
+    if (specTargets.length === 0) return setMessage('⚠️ SPEC/INFO画像がある商品がありません');
+    if (!confirm(`${specTargets.length}商品のスペックをOCR再読取します（${claudeKey ? 'Claude Haiku' : 'GPT'}使用）。\n紹介文・タイトル・説明文もリセットされます。よろしいですか？`)) return;
+    setLoading(true);
     const np = [...products];
-    const imgs = [...np[currentIdx].images];
-    const [moved] = imgs.splice(from, 1);
-    // D&D用: fromを抜いた後の配列でtoの位置に挿入
-    const insertAt = from < to ? to - 1 : to;
-    imgs.splice(insertAt, 0, moved);
-    np[currentIdx] = { ...np[currentIdx], images: imgs };
+    let ok = 0, fail = 0;
+    const t0 = Date.now();
+    for (let ti = 0; ti < specTargets.length; ti++) {
+      const { idx } = specTargets[ti];
+      const p = np[idx];
+      const elapsed = (Date.now() - t0) / 1000;
+      const eta = ti >= 2 ? Math.ceil((elapsed / ti) * (specTargets.length - ti)) : '';
+      setMessage(`📷 スペックOCR再読取中... ${ti+1}/${specTargets.length} (${p.folder})${eta ? ` 残り約${eta < 60 ? eta + '秒' : Math.ceil(eta/60) + '分'}` : ''}`);
+      try {
+        const needMaker = !p.specs?.maker || /^不明|^unknown/i.test(p.specs.maker);
+        const ocrResult = await ocrSpecs(apiKey, p.images, needMaker, claudeKey);
+        if (ocrResult) {
+          const s = ocrResult;
+          const existing = np[idx].specs || {};
+          // メーカー/型番はCSVを残し、スペックはOCR優先
+          if ((!existing.maker || /^不明|^unknown/i.test(existing.maker)) && s.maker) existing.maker = s.maker;
+          if (s.product_name && (!existing.product_name || /^DESKTOP-/i.test(existing.product_name))) existing.product_name = cleanModelName(s.product_name);
+          if (s.cpu) existing.cpu = cleanCpu(s.cpu);
+          if (s.memory) existing.memory = normalizeMemory(s.memory);
+          if (s.storage) existing.storage = normalizeStorage(s.storage);
+          if (s.gpu) existing.gpu = cleanGpu(s.gpu);
+          if (s.memory_type) existing.memory_type = s.memory_type;
+          if (s.storage_detail) existing.storage_detail = s.storage_detail;
+          if (s.model) existing.model = s.model;
+          if (s.display) existing.display = cleanDisplay(s.display);
+          np[idx].specs = existing;
+          // 紹介文・タイトル・説明文リセット
+          np[idx].intro = '';
+          np[idx].title = '';
+          np[idx].description = '';
+          ok++;
+        } else { fail++; }
+      } catch (e) {
+        console.error('specOcr error:', e);
+        fail++;
+      }
+      if (ti % 3 === 0) setProducts([...np]);
+    }
     setProducts(np);
-    setDragIdx(null);
+    setLoading(false);
+    setMessage(`✅ スペックOCR完了: ${ok}/${specTargets.length}成功${fail > 0 ? ` (${fail}件失敗)` : ''} → 「プレビューへ」で紹介文再生成`);
   };
+  // 画像並び替え
   // ◀▶ボタン用: 隣接画像と直接スワップ
   const swapImage = (idxA, idxB) => {
     if (idxA === idxB || idxA < 0 || idxB < 0) return;
@@ -2990,11 +3690,16 @@ function App() {
     setMessage(`${movedImgs.length}枚をPC ${targetIdx + 1}へ移動`);
   };
   const toggleExclude = (imgIdx) => {
+    const p = products[currentIdx];
+    if (!p || !p.images[imgIdx]) { console.error('toggleExclude: invalid', imgIdx, currentIdx); return; }
+    const was = p.images[imgIdx].excluded;
+    console.log(`[toggleExclude] idx=${imgIdx} was=${was} id=${p.images[imgIdx].id}`);
     const np = products.map((prod, pi) => {
       if (pi !== currentIdx) return prod;
       return { ...prod, images: prod.images.map((img, ii) => ii === imgIdx ? { ...img, excluded: !img.excluded } : img) };
     });
     setProducts(np);
+    setMessage(`${was ? '↩復元' : '🚫除外'}: #${imgIdx} ${p.images[imgIdx].id?.slice(0,20)}`);
   };
   // 自動画像並び替え
   // 共通価格検索（全照合で使用）
@@ -3214,6 +3919,10 @@ function App() {
       const isBadMaker = (m) => !m || /^不明|^unknown|^表示なし/i.test(m);
       const isBadModel = (m) => !m || /^DESKTOP-/i.test(m) || isInternalCode(m);
       const needOcr = np.filter(p => {
+        // デスクトップモード → spec画像が正（パーツ入替あり得る）→ 全商品OCR
+        if (pcMode === 'desktop') {
+          return p.images.some(img => !img.excluded && img.category === 'spec');
+        }
         if (p.specs?.cpu && !isBadMaker(p.specs?.maker)) return false; // 既にOK
         if (p.status === 'no_barcode' || p.status === 'no_data') return !p.specs?.cpu;
         // CSVマッチ済みでもメーカー不明 or 型番がDESKTOP等ならOCR
@@ -3224,29 +3933,45 @@ function App() {
         setMessage(`📷 画像からスペック読取中... 0/${needOcr.length}`);
         for (let i = 0; i < needOcr.length; i++) {
           const p = needOcr[i];
-          setMessage(`📷 画像からスペック読取中... ${i+1}/${needOcr.length} (${p.folder})`);
+          setMessage(`📷 画像からスペック読取中${claudeKey ? '(Haiku)' : '(GPT)'}... ${i+1}/${needOcr.length} (${p.folder})`);
           try {
             const needMaker = isBadMaker(p.specs?.maker);
-            const ocrResult = await ocrSpecs(apiKey, p.images, needMaker);
+            const ocrResult = await ocrSpecs(apiKey, p.images, needMaker, claudeKey);
             if (ocrResult) {
               const idx = np.findIndex(x => x.id === p.id);
               if (idx >= 0) {
                 const s = ocrResult;
                 const existing = np[idx].specs || {};
                 const hadCsvData = np[idx].status === 'ok';
-                if (hadCsvData) {
-                  // CSVデータあり → メーカー/型番のみOCRで補完、スペックはCSV優先
+                if (hadCsvData && pcMode !== 'desktop') {
+                  // ノートPC: CSVデータあり → メーカー/型番のみOCRで補完、スペックはCSV優先
                   if (isBadMaker(existing.maker) && s.maker) existing.maker = s.maker;
                   if (isBadModel(existing.product_name) && s.product_name) existing.product_name = cleanModelName(s.product_name);
                   if (!existing.cpu && s.cpu) existing.cpu = cleanCpu(s.cpu);
-                  if (!existing.display && (s.display || s.size)) existing.display = s.display || s.size;
+                  if (!existing.display && (s.display || s.size)) existing.display = cleanDisplay(s.display || s.size);
+                  // OCR固有フィールドは常に取得
+                  if (s.memory_type) existing.memory_type = s.memory_type;
+                  if (s.storage_detail) existing.storage_detail = s.storage_detail;
+                  np[idx].specs = existing;
+                } else if (hadCsvData && pcMode === 'desktop') {
+                  // デスクトップPC: OCRがspec画像の正 → スペック系はOCR優先、メーカー/型番はCSV残す
+                  if (isBadMaker(existing.maker) && s.maker) existing.maker = s.maker;
+                  if (isBadModel(existing.product_name) && s.product_name) existing.product_name = cleanModelName(s.product_name);
+                  if (s.cpu) existing.cpu = cleanCpu(s.cpu);
+                  if (s.memory) existing.memory = normalizeMemory(s.memory);
+                  if (s.storage) existing.storage = normalizeStorage(s.storage);
+                  if (s.gpu) existing.gpu = cleanGpu(s.gpu);
+                  if (s.memory_type) existing.memory_type = s.memory_type;
+                  if (s.storage_detail) existing.storage_detail = s.storage_detail;
+                  if (s.model) existing.model = s.model;
                   np[idx].specs = existing;
                 } else {
                   // CSVデータなし → フルOCR
                   np[idx].specs = {
                     maker: s.maker || '', product_name: cleanModelName(s.product_name || ''),
                     cpu: cleanCpu(s.cpu || ''), memory: normalizeMemory(s.memory || ''), storage: normalizeStorage(s.storage || ''),
-                    display: s.display || s.size || '', gpu: cleanGpu(s.gpu || ''),
+                    memory_type: s.memory_type || null, storage_detail: s.storage_detail || null,
+                    display: cleanDisplay(s.display || s.size || ''), gpu: cleanGpu(s.gpu || ''),
                     model: s.model || s.product_name || '', size: s.size || s.display || '',
                     year: s.year || null, chip: s.chip || null
                   };
@@ -3259,6 +3984,12 @@ function App() {
                 if (isMac) np[idx].product_type = s.chip ? 'apple_silicon' : 'intel_mac';
                 if (s.cycle_count) np[idx].cycle_count = s.cycle_count;
                 if (s.battery_health) np[idx].battery_health = s.battery_health;
+                // デスクトップ: OCRでスペック更新したら紹介文・タイトル・説明文をクリア→goToPreviewで再生成
+                if (pcMode === 'desktop') {
+                  np[idx].intro = '';
+                  np[idx].title = '';
+                  np[idx].description = '';
+                }
               }
             }
           } catch(e) { console.error('ocrSpecs error:', p.folder, e); }
@@ -3342,27 +4073,32 @@ function App() {
     const np = [...products];
     
     for (let i = 0; i < np.length; i++) {
-      if (np[i].intro) continue; // 既に生成済みはスキップ
+      const existingIntro = np[i].intro || '';
+      const isBadIntro = !existingIntro || existingIntro.length < 40 || /^.{0,20}の中古(PC|パソコン|デスクトップ|ノート).*です。?$/.test(existingIntro.trim());
+      if (existingIntro && !isBadIntro) continue; // まともな紹介文はスキップ
+      if (np[i].title && np[i].description && !isBadIntro) continue; // CSV復元済みはスキップ
       if (!np[i].specs?.cpu && !np[i].specs?.chip) continue; // スペック無しはスキップ
+      const csvTitle = np[i].title;  // CSV復元タイトルを保持
+      const csvDesc = np[i].description;  // CSV復元説明文を保持
       try {
-        np[i].intro = (claudeKey || apiKey) ? await generateIntro(apiKey, np[i], claudeKey) : `${np[i].specs?.maker || ''}の中古PCです。`;
-        // タイトルと説明文も事前生成
-        np[i].title = np[i].title || makeTitle(np[i]);
-        np[i].description = np[i].description || makeDescription(np[i], noticeText);
+        np[i].intro = (claudeKey || apiKey) ? await generateIntro(apiKey, np[i], claudeKey, pcMode) : buildFallbackIntro(np[i], pcMode);
+        // タイトルと説明文も（再）生成 — CSV復元済みの場合は上書きしない
+        if (!csvTitle) np[i].title = makeTitle(np[i], pcMode);
+        if (!csvDesc) np[i].description = makeDescription(np[i], noticeText, pcMode);
         setProducts([...np]);
         setMessage(`紹介文生成中... (${i+1}/${np.length})`);
       } catch (e) {
         console.error('紹介文生成エラー:', e);
-        np[i].intro = `${np[i].specs?.maker || ''}の中古PCです。`;
-        np[i].title = np[i].title || makeTitle(np[i]);
-        np[i].description = np[i].description || makeDescription(np[i], noticeText);
+        np[i].intro = buildFallbackIntro(np[i], pcMode);
+        if (!csvTitle) np[i].title = makeTitle(np[i], pcMode);
+        if (!csvDesc) np[i].description = makeDescription(np[i], noticeText, pcMode);
       }
     }
     
     // 全商品のタイトル・説明文を生成（バーコードなしも含む）
     np.forEach(p => {
-      if (!p.title) p.title = makeTitle(p);
-      if (!p.description) p.description = makeDescription(p, noticeText);
+      if (!p.title) p.title = makeTitle(p, pcMode);
+      if (!p.description) p.description = makeDescription(p, noticeText, pcMode);
     });
     
     setProducts(np);
@@ -3389,6 +4125,7 @@ function App() {
     return `${String(idx + 1).padStart(2, '0')}_${img.filename || `img_${idx}.jpg`}`;
   };
   // 全商品の画像をフォルダに保存（メルカリCSVインポート用: フラット構造）
+  // 商品画像: 01_filename, 02_filename... / BC画像: BC_filename
   const saveAllImages = async () => {
     let dir = outputDirHandle;
     if (!dir) {
@@ -3403,17 +4140,25 @@ function App() {
       setMessage(`📁 保存中... ${pi + 1}/${okProducts.length} (${p.barcode || p.folder})`);
       try {
         const allActive = p.images.filter(img => !img.excluded);
-        const activeImgs = allActive.filter(img => !img.isBarcode && img.category !== 'barcode');
-        for (let i = 0; i < Math.min(activeImgs.length, 20); i++) {
-          const fname = makeImageFilename(p, activeImgs[i], i);
-          await saveImageToFolder(dir, fname, activeImgs[i].dataUrl);
+        const productImgs = allActive.filter(img => !img.isBarcode && img.category !== 'barcode');
+        const bcImgs = allActive.filter(img => img.isBarcode || img.category === 'barcode');
+        // 商品画像（CSVと同じ番号）
+        for (let i = 0; i < Math.min(productImgs.length, 20); i++) {
+          const fname = makeImageFilename(p, productImgs[i], i);
+          await saveImageToFolder(dir, fname, productImgs[i].dataUrl);
           saved++;
-          if (saved % 5 === 0) await new Promise(r => setTimeout(r, 10));
         }
+        // BC画像（BC_プレフィクス）
+        for (let i = 0; i < bcImgs.length; i++) {
+          const fname = `BC${i > 0 ? i + 1 : ''}_${bcImgs[i].filename || `bc_${i}.jpg`}`;
+          await saveImageToFolder(dir, fname, bcImgs[i].dataUrl);
+          saved++;
+        }
+        if (saved % 5 === 0) await new Promise(r => setTimeout(r, 10));
       } catch (e) { console.error(`保存エラー (${p.folder}):`, e); }
     }
     setLoading(false);
-    setMessage(`✅ ${okProducts.length}商品 / ${saved}枚を保存しました`);
+    setMessage(`✅ ${okProducts.length}商品 / ${saved}枚を保存しました（BC含む）`);
   };
   const generateCsv = async () => {
     setLoading(true);
@@ -3440,14 +4185,14 @@ function App() {
         .map((img, i) => makeImageFilename(p, img, i));
       while (imgs.length < 20) imgs.push('');
       
-      const cat = ['intel_mac', 'apple_silicon'].includes(p.product_type) ? CONFIG.category_macbook : CONFIG.category_windows;
+      const cat = pcMode === 'desktop' ? CONFIG.category_desktop : (['intel_mac', 'apple_silicon'].includes(p.product_type) ? CONFIG.category_macbook : CONFIG.category_windows);
       const conditionCode = typeof p.condition === 'number' ? p.condition : (CONFIG.condition_map[p.condition] || 3);
       const price = p.price || 0;  // 価格がなければ0（要設定）
       
       return [
         ...imgs,                           // 商品画像名_1～20
-        p.title || makeTitle(p),           // 商品名（編集済みがあればそれを使用）
-        p.description || makeDescription(p, noticeText), // 商品説明（編集済みがあればそれを使用）
+        p.title || makeTitle(p, pcMode),           // 商品名（編集済みがあればそれを使用）
+        p.description || makeDescription(p, noticeText, pcMode), // 商品説明（編集済みがあればそれを使用）
         '',                                // SKU1_種類
         1,                                 // SKU1_在庫数
         '',                                // SKU1_商品管理コード（空）
@@ -3459,7 +4204,7 @@ function App() {
         CONFIG.shipping_method,            // 配送方法
         CONFIG.region,                     // 発送元の地域
         CONFIG.shipping_days,              // 発送までの日数
-        1,                                 // 商品ステータス（1=下書き）
+        2,                                 // 商品ステータス（2=公開）
         CONFIG.shipping_fee                // 配送料の負担
       ];
     });
@@ -3554,6 +4299,97 @@ function App() {
     reader.readAsText(file);
     e.target.value = '';
   };
+  // CSV復元: メルカリ出力CSVから商品データを再構築
+  const restoreFromCsv = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const uint8 = new Uint8Array(ev.target.result);
+        const detected = Encoding.detect(uint8);
+        const text = detected === 'UTF8' ? new TextDecoder('utf-8').decode(uint8) : 
+                     Encoding.convert(uint8, { to: 'UNICODE', from: detected, type: 'string' });
+        
+        const parsed = Papa.parse(text.trim(), { header: true, skipEmptyLines: true });
+        if (!parsed.data || parsed.data.length === 0) { setMessage('❌ CSVにデータがありません'); return; }
+        
+        const restored = parsed.data.map((row, ri) => {
+          const images = [];
+          for (let i = 1; i <= 20; i++) {
+            const fname = row[`商品画像名_${i}`];
+            if (fname && fname.trim()) {
+              const origName = fname.replace(/^\d{2}_/, '');
+              images.push({ id: origName, filename: origName, dataUrl: null, thumbUrl: null, excluded: false, isBarcode: false, category: i <= 2 ? 'main' : 'other' });
+            }
+          }
+          const title = row['商品名'] || '';
+          const description = row['商品説明'] || '';
+          const price = parseInt(row['販売価格']) || 0;
+          const condition = parseInt(row['商品の状態']) || 3;
+          let barcode = '';
+          const bcMatch = title.match(/\s(SEL\d{10,}|\d{10,})$/);
+          if (bcMatch) barcode = bcMatch[1];
+          const hasOffice = /office/i.test(title) || /office/i.test(description);
+          const isJunk = /ジャンク/.test(title);
+          const isMac = /mac/i.test(title);
+          const product_type = isMac ? (/M[1-4]|apple silicon/i.test(title + description) ? 'apple_silicon' : 'intel_mac') : 'windows';
+          // === description全体パース ===
+          const specs = {};
+          const specMap = { 'モデル': 'model', 'CPU': 'cpu', 'チップ': 'chip', 'メモリ': 'memory', 'ストレージ': 'storage', 'GPU': 'gpu', 'ディスプレイ': 'display', 'メーカー': 'maker', '型番': 'product_name' };
+          const specSection = description.match(/【スペック】([\s\S]*?)(?=【|$)/);
+          if (specSection) {
+            for (const line of specSection[1].split('\n')) {
+              const m = line.match(/^(.+?)[：:](.+)/);
+              if (m) {
+                const label = m[1].trim();
+                const val = m[2].trim();
+                const key = specMap[label];
+                if (key) specs[key] = val;
+                if (label === '充放電回数') specs._cycle = val.replace(/回.*/, '');
+                if (label === 'バッテリー最大容量') specs._battery = val.replace(/%.*/, '');
+              }
+            }
+          }
+          if (isMac && specs.display) specs.size = specs.display;
+          if (!specs.maker) {
+            if (isMac) specs.maker = 'Apple';
+            else if (/lenovo/i.test(title)) specs.maker = 'Lenovo';
+            else if (/dell/i.test(title)) specs.maker = 'Dell';
+            else if (/hp/i.test(title)) specs.maker = 'HP';
+            else if (/asus/i.test(title)) specs.maker = 'ASUS';
+            else if (/toshiba|dynabook/i.test(title)) specs.maker = '東芝';
+            else if (/nec/i.test(title)) specs.maker = 'NEC';
+            else if (/fujitsu/i.test(title)) specs.maker = '富士通';
+            else if (/panasonic|let'?s\s?note/i.test(title)) specs.maker = 'Panasonic';
+            else if (/vaio/i.test(title)) specs.maker = 'VAIO';
+            else if (/mouse/i.test(title)) specs.maker = 'mouse';
+          }
+          let intro = '';
+          const introMatch = description.match(/^(?:.*\n)?\n([\s\S]*?)(?=\n\n\s*【スペック】)/);
+          if (introMatch) intro = introMatch[1].trim();
+          const accMatch = description.match(/【付属品】\n([^\n]+)/);
+          const accessories = accMatch ? accMatch[1].split('、').map(s => s.trim()).filter(Boolean) : [];
+          let conditionNotes = '';
+          const stateMatch = description.match(/【状態】\n[^\n]*\n([\s\S]*?)(?=\n\n|$)/);
+          if (stateMatch) conditionNotes = stateMatch[1].trim();
+          const cycle_count = specs._cycle || '';
+          const battery_health = specs._battery || '';
+          delete specs._cycle; delete specs._battery;
+          return { id: `csv_${ri}`, folder: `PC_${String(ri + 1).padStart(3, '0')}`, images, title, description, barcode, price, condition, hasOffice, isJunk, product_type, specs, intro, accessories, conditionNotes, cycle_count, battery_health };
+        });
+        setProducts(restored);
+        setStep(3);
+        setCurrentIdx(0);
+        setMessage(`📄 CSV復元: ${restored.length}商品 → 「📁 画像復元」で画像DLフォルダを選択`);
+      } catch (err) {
+        console.error('CSV復元エラー:', err);
+        setMessage('❌ CSV復元失敗: ' + err.message);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = '';
+  };
   const cur = products[currentIdx];
   return (
     <div className="min-h-screen bg-gray-100">
@@ -3569,6 +4405,7 @@ function App() {
           <span>API: {apiKey ? '✓' : '未設定'}</span>
           <span className="text-purple-600">🤖 gpt-5-mini</span>
           <span className={claudeKey ? 'text-orange-500' : 'text-gray-400'}>🧠 {claudeKey ? 'Claude Haiku ✓' : 'Claude未設定'}</span>
+          {API_COST.calls > 0 && <span className="text-green-600" title={getApiCostDetail()}>💰 {getApiCostSummary()}</span>}
           <span className="text-cyan-400">📘 型番DB {Object.keys(BASE_MODEL_MAP).length + Object.keys(getLearnedMap()).length}件</span>
           {(purchaseData.length > 0 || priceData.length > 0) && (
             <button onClick={clearSavedData} className="text-red-500 hover:text-red-700 text-xs">🗑️ データクリア</button>
@@ -3586,12 +4423,19 @@ function App() {
           {products.length > 0 && (
             <button onClick={reloadImagesFromFolder} disabled={loading} className="text-orange-500 hover:text-orange-700 text-xs font-bold disabled:opacity-50" title="フォルダから画像を再読み込み">📁 画像復元</button>
           )}
+          {products.length > 0 && products.some(p => !p.barcode) && (
+            <button onClick={restoreBcFromFolder} disabled={loading} className="text-purple-500 hover:text-purple-700 text-xs font-bold disabled:opacity-50" title="元撮影フォルダからBC画像を補填・OCR">🔖 BC補填</button>
+          )}
           {products.length > 0 && (
             <button onClick={saveAllImages} disabled={loading} className="text-green-600 hover:text-green-800 text-xs font-bold disabled:opacity-50" title="全商品の画像をフォルダに保存">💾 画像DL</button>
           )}
           <label className="text-blue-500 hover:text-blue-700 text-xs cursor-pointer" title="JSONファイルから復元">
             📤 読込
             <input type="file" accept=".json" onChange={loadSession} className="hidden"/>
+          </label>
+          <label className="text-orange-500 hover:text-orange-700 text-xs cursor-pointer font-bold" title="メルカリ出力CSVから商品データ復元">
+            📄 CSV復元
+            <input type="file" accept=".csv" onChange={restoreFromCsv} className="hidden"/>
           </label>
           <button onClick={() => setShowNoticeEditor(true)} className="text-gray-500 hover:text-gray-700 text-xs ml-2">📝 保証文</button>
           {sorterPhotos.length > 0 && !sorterMode && (
@@ -3679,6 +4523,14 @@ function App() {
                   </div>
                 </div>
               </div>
+              <div className="bg-white rounded shadow p-4">
+                <h3 className="font-bold mb-2 flex items-center gap-2"><Icon name="monitor" className="w-5 h-5 text-blue-500"/>PCモード</h3>
+                <div className="flex gap-2">
+                  <button onClick={() => setPcModeAll('notebook')} className={`flex-1 py-2 rounded text-sm font-bold border-2 transition-all ${pcMode === 'notebook' ? 'bg-blue-500 text-white border-blue-500' : 'bg-white text-gray-600 border-gray-300 hover:border-blue-300'}`}>💻 ノートPC</button>
+                  <button onClick={() => setPcModeAll('desktop')} className={`flex-1 py-2 rounded text-sm font-bold border-2 transition-all ${pcMode === 'desktop' ? 'bg-green-500 text-white border-green-500' : 'bg-white text-gray-600 border-gray-300 hover:border-green-300'}`}>🖥️ デスクトップPC</button>
+                </div>
+                <p className="text-xs text-gray-400 mt-1">{pcMode === 'desktop' ? 'スペック画像→外観の順で並替。バッテリー項目なし' : 'メイン→情報→キーボード→側面の順で並替'}</p>
+              </div>
               <DropZone
                 title="📷 PC写真を読込"
                 icon="image"
@@ -3757,18 +4609,28 @@ function App() {
                   />
                   <span className="text-sm font-medium text-red-600">⚠️ ジャンク</span>
                 </label>
+                <label className="flex items-center gap-1.5 cursor-pointer px-3 py-1.5 rounded-lg transition" style={{background: autoMerge ? '#ecfdf5' : '#f3f4f6'}}>
+                  <input type="checkbox" checked={autoMerge} onChange={e => setAutoMergeAll(e.target.checked)} className="w-4 h-4"/>
+                  <span className={`text-sm font-medium ${autoMerge ? 'text-green-700' : 'text-gray-400'}`}>🔗 自動結合</span>
+                </label>
               </div>
             </div>
             {/* ヘッダー行2: 画像枚数 + ツールボタン */}
             <div className="border-b px-4 py-2 flex items-center justify-between bg-white">
               <div className="flex items-center gap-3">
-                <span className={`text-sm font-bold px-2 py-1 rounded ${uploadCount <= 10 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                  📸 出品: {uploadCount}枚 {uploadCount > 10 && '⚠️'}
+                <span className={`text-sm font-bold px-2 py-1 rounded ${uploadCount <= 20 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                  📸 出品: {uploadCount}枚 {uploadCount > 20 && '🚫 上限超過'}
+                </span>
+                <span className={`text-xs font-bold px-2 py-1 rounded ${pcMode === 'desktop' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
+                  {pcMode === 'desktop' ? '🖥️ デスクトップ' : '💻 ノート'}
                 </span>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
                 <button onClick={doOcrAll} disabled={loading} className="px-3 py-1.5 bg-purple-500 text-white rounded text-sm hover:bg-purple-600 disabled:opacity-50 font-medium">
                   {loading ? '⏳ 処理中...' : '🔍 全OCR'}
+                </button>
+                <button onClick={doSpecOcrAll} disabled={loading} className="px-3 py-1.5 bg-purple-700 text-white rounded text-sm hover:bg-purple-800 disabled:opacity-50 font-medium" title="全商品のSPEC画像からスペックを再読取">
+                  📷 全スペックOCR
                 </button>
                 <button onClick={aiReprocess} disabled={loading} className="px-3 py-1.5 bg-indigo-500 text-white rounded text-sm hover:bg-indigo-600 disabled:opacity-50 font-medium">
                   🔄 AI再処理
@@ -3794,11 +4656,11 @@ function App() {
                   if (selectedImages.length === 0) { setMessage('画像を選択してからBC切替してください'); return; }
                   const np = [...products];
                   const imgs = np[currentIdx].images;
-                  // 選択画像のBC状態を確認
-                  const anyBc = selectedImages.some(si => imgs[si]?.isBarcode);
+                  // 選択画像のBC状態を確認（isBarcode OR category=barcode）
+                  const anyBc = selectedImages.some(si => imgs[si]?.isBarcode || imgs[si]?.category === 'barcode');
                   // 全解除 or 選択画像をBC指定（他は解除）
-                  imgs.forEach(img => img.isBarcode = false);
-                  if (!anyBc) selectedImages.forEach(si => { if (imgs[si]) imgs[si].isBarcode = true; });
+                  imgs.forEach(img => { img.isBarcode = false; if (img.category === 'barcode') img.category = 'other'; });
+                  if (!anyBc) selectedImages.forEach(si => { if (imgs[si]) { imgs[si].isBarcode = true; imgs[si].category = 'barcode'; } });
                   setProducts(np);
                   setSelectedImages([]);
                 }} className="px-3 py-1.5 bg-cyan-500 text-white rounded text-sm hover:bg-cyan-600 font-medium" title="選択した画像をバーコード画像に指定/解除">
@@ -4029,9 +4891,9 @@ function App() {
                       const isBarcode = !!img.isBarcode || img.category === 'barcode';
                       const isSelected = selectedImages.includes(i);
                       const displayNum = activeIdx + 1;
-                      const catColors = { main: 'bg-blue-500', keyboard: 'bg-cyan-500', side: 'bg-purple-500', info: 'bg-green-600', other: 'bg-gray-500' };
-                      const catLabels = { main: 'MAIN', keyboard: 'KEY', side: 'SIDE', info: 'INFO', other: '?' };
-                      const cats = ['main', 'info', 'keyboard', 'side', 'other'];
+                      const catColors = { main: 'bg-blue-500', keyboard: 'bg-cyan-500', side: 'bg-purple-500', info: 'bg-green-600', other: 'bg-gray-500', spec: 'bg-green-600', front: 'bg-blue-500', interior: 'bg-orange-500', back: 'bg-red-500' };
+                      const catLabels = { main: 'MAIN', keyboard: 'KEY', side: 'SIDE', info: 'INFO', other: '?', spec: 'SPEC', front: 'FRONT', interior: 'IN', back: 'BACK' };
+                      const cats = pcMode === 'desktop' ? ['front', 'spec', 'interior', 'back', 'side', 'other'] : ['main', 'info', 'keyboard', 'side', 'other'];
                       return (
                         <div key={img.id} className="relative group"
                           onMouseEnter={() => setHoverImg(img.dataUrl)}
@@ -4049,7 +4911,7 @@ function App() {
                             const np = [...products];
                             const imgs = [...np[currentIdx].images];
                             const [moved] = imgs.splice(from, 1);
-                            imgs.splice(i, 0, moved);
+                            imgs.splice(from < i ? i - 1 : i, 0, moved);
                             np[currentIdx] = { ...np[currentIdx], images: imgs };
                             setProducts(np);
                             setDragIdx(null);
@@ -4062,12 +4924,11 @@ function App() {
                         >
                           <div
                             onClick={() => {
-                              if (isBarcode) { setZoomImage({dataUrl: img.dataUrl, imgIdx: i}); return; }
                               if (isSelected) setSelectedImages(selectedImages.filter(x => x !== i));
                               else setSelectedImages([...selectedImages, i]);
                             }}
                             onDoubleClick={() => setZoomImage({dataUrl: img.dataUrl, imgIdx: i})}
-                            onContextMenu={e => { e.preventDefault(); const np = [...products]; const toggling = !img.isBarcode; if (toggling) np[currentIdx].images.forEach(im => im.isBarcode = false); np[currentIdx].images[i].isBarcode = toggling; setProducts(np); }}
+                            onContextMenu={e => { e.preventDefault(); const np = [...products]; const wasBC = img.isBarcode || img.category === 'barcode'; np[currentIdx].images.forEach(im => { im.isBarcode = false; if (im.category === 'barcode') im.category = 'other'; }); if (!wasBC) { np[currentIdx].images[i].isBarcode = true; np[currentIdx].images[i].category = 'barcode'; } setProducts(np); }}
                             className={`relative cursor-pointer transition-all ${isSelected ? 'ring-4 ring-blue-500 scale-105' : 'hover:ring-2 hover:ring-gray-400'} ${isBarcode ? 'ring-2 ring-red-400' : ''}`}
                           >
                             <img src={img.thumbUrl || img.dataUrl} draggable={false} className={`w-32 h-32 object-cover rounded border-2 ${isBarcode ? 'border-red-400' : isSelected ? 'border-blue-400' : 'border-gray-200'}`}/>
@@ -4087,6 +4948,35 @@ function App() {
                             <button onClick={e => { e.stopPropagation(); toggleExclude(i); }} className="absolute bottom-1 right-1 bg-white/80 rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity" title="除外">
                               <Icon name="eyeOff" className="w-3 h-3"/>
                             </button>
+                            {/* FRONT指定ボタン（デスクトップモード・ホバー表示） */}
+                            {pcMode === 'desktop' && !isBarcode && img.category !== 'front' && (
+                              <button onClick={e => {
+                                e.stopPropagation();
+                                const np = [...products];
+                                const imgs = [...np[currentIdx].images];
+                                // 現在のfront画像をsideに変更
+                                imgs.forEach(im => { if (im.category === 'front' && !im.excluded) im.category = 'side'; });
+                                // この画像をfrontに設定
+                                imgs[i].category = 'front';
+                                // 先頭（excluded除く最初の位置）に移動
+                                const [moved] = imgs.splice(i, 1);
+                                const firstActiveIdx = imgs.findIndex(im => !im.excluded);
+                                imgs.splice(firstActiveIdx >= 0 ? firstActiveIdx : 0, 0, moved);
+                                np[currentIdx] = { ...np[currentIdx], images: imgs };
+                                setProducts(np);
+                                setMessage('📌 FRONT指定 → 1枚目に移動');
+                              }} className="absolute top-7 right-1 bg-blue-500/90 text-white text-xs font-bold px-1 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity" title="この画像をFRONT（1枚目）に指定">📌</button>
+                            )}
+                            {/* SPEC指定ボタン（デスクトップモード・ホバー表示） */}
+                            {pcMode === 'desktop' && !isBarcode && img.category !== 'spec' && (
+                              <button onClick={e => {
+                                e.stopPropagation();
+                                const np = [...products];
+                                np[currentIdx].images[i].category = 'spec';
+                                setProducts(np);
+                                setMessage('🏷️ SPEC指定');
+                              }} className="absolute top-14 right-1 bg-green-600/90 text-white text-xs font-bold px-1 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity" title="この画像をSPECに指定">🏷️</button>
+                            )}
                           </div>
                           {/* ◀▶ 並替ボタン（ホバー表示） */}
                           {!isBarcode && (
@@ -4414,6 +5304,32 @@ function App() {
               <h2 className="text-lg font-bold">プレビュー編集</h2>
               <div className="flex items-center gap-2">
                 <span className="text-sm text-gray-600">{okProducts.length}商品</span>
+                <button onClick={async () => {
+                  if (!claudeKey && !apiKey) { setMessage('❌ APIキー未設定'); return; }
+                  if (!confirm(`全${products.length}商品の紹介文・タイトル・説明文をAIで再生成します。よろしいですか？`)) return;
+                  setLoading(true);
+                  const np = [...products];
+                  let ok = 0, fail = 0;
+                  for (let i = 0; i < np.length; i++) {
+                    setMessage(`🤖 全商品AI再生成中... ${i+1}/${np.length}`);
+                    try {
+                      const intro = await generateIntro(apiKey, np[i], claudeKey, pcMode);
+                      np[i].intro = intro;
+                    } catch (e) {
+                      np[i].intro = buildFallbackIntro(np[i], pcMode);
+                      fail++;
+                    }
+                    np[i].title = makeTitle(np[i], pcMode);
+                    np[i].description = makeDescription(np[i], noticeText, pcMode);
+                    ok++;
+                    if (i % 3 === 0) { setProducts([...np]); }
+                  }
+                  setProducts(np);
+                  setLoading(false);
+                  setMessage(`✅ 全再生成完了: ${ok}商品${fail > 0 ? ` (${fail}件APIフォールバック)` : ''}`);
+                }} disabled={loading} className="px-3 py-1 bg-purple-500 text-white rounded text-sm font-bold hover:bg-purple-600 disabled:opacity-50">
+                  🤖 全商品AI再生成
+                </button>
                 <button onClick={pickOutputFolder} className="px-3 py-1 border rounded text-sm hover:bg-gray-50">
                   📁 {outputDirHandle ? outputDirHandle.name : '保存先'}
                 </button>
@@ -4501,17 +5417,54 @@ function App() {
                         const np = [...products];
                         const idx = np.findIndex(p => p.id === cur.id);
                         if (idx >= 0) {
-                          np[idx].title = makeTitle(np[idx]);
-                          np[idx].description = makeDescription(np[idx], noticeText);
+                          const intro = np[idx].intro || '';
+                          if (!intro || intro.length < 30 || /^.{0,10}の中古(PC|パソコン)です。?$/.test(intro.trim())) {
+                            np[idx].intro = buildFallbackIntro(np[idx], pcMode);
+                          }
+                          np[idx].title = makeTitle(np[idx], pcMode);
+                          np[idx].description = makeDescription(np[idx], noticeText, pcMode);
                         }
                         setProducts(np);
                         setMessage('タイトル・説明文を再生成しました');
                       }} className="px-2 py-1 bg-blue-500 text-white rounded text-xs hover:bg-blue-600">🔄 タイトル・説明を再生成</button>
+                      <button onClick={async () => {
+                        if (!claudeKey && !apiKey) { setMessage('❌ APIキー未設定'); return; }
+                        const idx = products.findIndex(p => p.id === cur.id);
+                        if (idx < 0) return;
+                        setLoading(true);
+                        setMessage('📷 この商品のスペックをOCR再読取中...');
+                        try {
+                          const needMaker = !cur.specs?.maker || /^不明|^unknown/i.test(cur.specs.maker);
+                          const ocrResult = await ocrSpecs(apiKey, cur.images, needMaker, claudeKey);
+                          if (ocrResult) {
+                            const np = [...products];
+                            const s = ocrResult;
+                            const existing = np[idx].specs || {};
+                            if ((!existing.maker || /^不明|^unknown/i.test(existing.maker)) && s.maker) existing.maker = s.maker;
+                            if (s.product_name && (!existing.product_name || /^DESKTOP-/i.test(existing.product_name))) existing.product_name = cleanModelName(s.product_name);
+                            if (s.cpu) existing.cpu = cleanCpu(s.cpu);
+                            if (s.memory) existing.memory = normalizeMemory(s.memory);
+                            if (s.storage) existing.storage = normalizeStorage(s.storage);
+                            if (s.gpu) existing.gpu = cleanGpu(s.gpu);
+                            if (s.memory_type) existing.memory_type = s.memory_type;
+                            if (s.storage_detail) existing.storage_detail = s.storage_detail;
+                            if (s.model) existing.model = s.model;
+                            if (s.display) existing.display = cleanDisplay(s.display);
+                            np[idx].specs = existing;
+                            np[idx].intro = '';
+                            np[idx].title = makeTitle(np[idx], pcMode);
+                            np[idx].description = makeDescription(np[idx], noticeText, pcMode);
+                            setProducts(np);
+                            setMessage('✅ OCR再読取完了 → スペック更新済み');
+                          } else { setMessage('⚠️ OCR結果なし'); }
+                        } catch (e) { setMessage(`❌ OCRエラー: ${e.message?.slice(0,40)}`); }
+                        setLoading(false);
+                      }} disabled={loading} className="px-2 py-1 bg-purple-700 text-white rounded text-xs hover:bg-purple-800 disabled:opacity-50" title="この商品のSPEC画像からスペック再読取">📷 OCR再読取</button>
                     </div>
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                       {[
                         ['maker', 'メーカー'], ['product_name', '型番'], ['cpu', 'CPU'], ['memory', 'メモリ'],
-                        ['storage', 'ストレージ'], ['gpu', 'GPU'], ['display', '画面'], ['model', 'モデル名']
+                        ['memory_type', 'メモリ規格'], ['storage', 'ストレージ'], ['gpu', 'GPU'], ['display', '画面']
                       ].map(([key, label]) => (
                         <div key={key}>
                           <label className="text-xs text-gray-500">{label}</label>
@@ -4533,6 +5486,15 @@ function App() {
                         </div>
                       ))}
                     </div>
+                    {/* ストレージ詳細（OCR取得時のみ表示） */}
+                    {cur.specs?.storage_detail && Array.isArray(cur.specs.storage_detail) && cur.specs.storage_detail.length > 0 && (
+                      <div className="mt-2 px-2 py-1.5 bg-white rounded border text-xs">
+                        <span className="text-gray-500 font-medium">💾 ストレージ詳細：</span>
+                        {cur.specs.storage_detail.map((d, di) => (
+                          <span key={di} className="ml-2 text-gray-700">{[d.name, d.capacity, d.type].filter(Boolean).join(' / ')}{di < cur.specs.storage_detail.length - 1 ? '　|' : ''}</span>
+                        ))}
+                      </div>
+                    )}
                     <div className="grid grid-cols-3 gap-2 mt-2">
                       <div>
                         <label className="text-xs text-gray-500">状態</label>
@@ -4588,8 +5550,8 @@ function App() {
                   <div className="mb-4">
                     <div className="flex items-center justify-between mb-1">
                       <label className="font-medium text-sm">タイトル</label>
-                      <span className={`text-xs ${(cur.title || '').length > 80 ? 'text-red-500' : 'text-gray-500'}`}>
-                        {(cur.title || '').length}/80
+                      <span className={`text-xs ${(cur.title || '').length > 130 ? 'text-red-500' : 'text-gray-500'}`}>
+                        {(cur.title || '').length}/130
                       </span>
                     </div>
                     <input 
@@ -4601,7 +5563,7 @@ function App() {
                         if (idx >= 0) np[idx].title = e.target.value;
                         setProducts(np); 
                       }} 
-                      className={`w-full border rounded px-3 py-2 ${(cur.title || '').length > 80 ? 'border-red-400' : ''}`}
+                      className={`w-full border rounded px-3 py-2 ${(cur.title || '').length > 130 ? 'border-red-400' : ''}`}
                     />
                   </div>
                   
@@ -4698,7 +5660,84 @@ function App() {
                   
                   {/* 商品説明 */}
                   <div>
-                    <label className="font-medium text-sm block mb-1">商品説明</label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="font-medium text-sm">商品説明</label>
+                      <div className="flex gap-1">
+                        <button onClick={() => {
+                          const np = [...products];
+                          const idx = np.findIndex(p => p.id === cur.id);
+                          if (idx >= 0) {
+                            // 短すぎる/雑な紹介文はフォールバックで置換
+                            const intro = np[idx].intro || '';
+                            if (!intro || intro.length < 30 || /^.{0,10}の中古(PC|パソコン)です。?$/.test(intro.trim())) {
+                              np[idx].intro = buildFallbackIntro(np[idx], pcMode);
+                            }
+                            np[idx].title = makeTitle(np[idx], pcMode);
+                            np[idx].description = makeDescription(np[idx], noticeText, pcMode);
+                          }
+                          setProducts(np);
+                          setMessage('🔄 テンプレ再生成しました');
+                        }} className="px-2 py-1 bg-gray-500 text-white rounded text-xs hover:bg-gray-600" title="紹介文がダメなら自動修正＋テンプレ再構築">🔄 テンプレ再構築</button>
+                        <button onClick={async () => {
+                          if (!claudeKey && !apiKey) { setMessage('❌ APIキー未設定'); return; }
+                          const idx = products.findIndex(p => p.id === cur.id);
+                          if (idx < 0) return;
+                          setLoading(true);
+                          const np = [...products];
+                          
+                          // Step 1: 画像からスペック再読取
+                          const hasImages = cur.images.some(img => img.dataUrl);
+                          if (hasImages && (claudeKey || apiKey)) {
+                            setMessage('🤖 Step 1/2: スペック再読取中...');
+                            try {
+                              const needMaker = !cur.specs?.maker || /^不明|^unknown/i.test(cur.specs.maker);
+                              const ocrResult = await ocrSpecs(apiKey, cur.images, needMaker, claudeKey);
+                              if (ocrResult) {
+                                const s = ocrResult;
+                                np[idx].specs = {
+                                  ...np[idx].specs,
+                                  maker: s.maker || np[idx].specs?.maker || '',
+                                  product_name: cleanModelName(s.product_name || '') || np[idx].specs?.product_name || '',
+                                  cpu: cleanCpu(s.cpu || '') || np[idx].specs?.cpu || '',
+                                  memory: normalizeMemory(s.memory || '') || np[idx].specs?.memory || '',
+                                  memory_type: s.memory_type || np[idx].specs?.memory_type || null,
+                                  storage: normalizeStorage(s.storage || '') || np[idx].specs?.storage || '',
+                                  storage_detail: s.storage_detail || np[idx].specs?.storage_detail || null,
+                                  display: cleanDisplay(s.display || s.size || '') || np[idx].specs?.display || '',
+                                  gpu: cleanGpu(s.gpu || '') || np[idx].specs?.gpu || '',
+                                  model: s.model || np[idx].specs?.model || '',
+                                  size: s.size || np[idx].specs?.size || '',
+                                };
+                                if (s.cycle_count) np[idx].cycle_count = s.cycle_count;
+                                if (s.battery_health) np[idx].battery_health = s.battery_health;
+                                setProducts([...np]);
+                              }
+                            } catch (e) {
+                              console.warn('スペック再読取失敗:', e.message);
+                            }
+                          }
+                          
+                          // Step 2: 紹介文＋タイトル＋説明文を再生成
+                          setMessage('🤖 Step 2/2: 紹介文生成中...');
+                          try {
+                            const intro = await generateIntro(apiKey, np[idx], claudeKey, pcMode);
+                            np[idx].intro = intro;
+                            np[idx].title = makeTitle(np[idx], pcMode);
+                            np[idx].description = makeDescription(np[idx], noticeText, pcMode);
+                            setProducts(np);
+                            setMessage('✅ 全再生成完了（スペック再読取＋紹介文＋タイトル＋説明文）');
+                          } catch (e) {
+                            console.error('再生成エラー:', e);
+                            np[idx].intro = buildFallbackIntro(np[idx], pcMode);
+                            np[idx].title = makeTitle(np[idx], pcMode);
+                            np[idx].description = makeDescription(np[idx], noticeText, pcMode);
+                            setProducts(np);
+                            setMessage(`⚠️ API失敗のためテンプレで生成しました（${e.message?.slice(0,30)}）`);
+                          }
+                          setLoading(false);
+                        }} disabled={loading} className="px-3 py-1.5 bg-purple-500 text-white rounded text-xs font-bold hover:bg-purple-600 disabled:opacity-50">🤖 AI全再生成</button>
+                      </div>
+                    </div>
                     <textarea 
                       value={cur.description || ''} 
                       onChange={e => { 
@@ -4746,7 +5785,7 @@ function App() {
                 className="w-full border rounded px-3 py-2 text-sm font-mono"
               />
               <div className="flex justify-between mt-3">
-                <button onClick={() => { setNoticeText(DEFAULT_NOTICE_TEXT); }} className="px-3 py-1 border rounded text-sm hover:bg-gray-50">デフォルトに戻す</button>
+                <button onClick={() => { setNoticeText(pcMode === 'desktop' ? DEFAULT_NOTICE_TEXT_DESKTOP : DEFAULT_NOTICE_TEXT); }} className="px-3 py-1 border rounded text-sm hover:bg-gray-50">デフォルトに戻す</button>
                 <div className="flex gap-2">
                   <button onClick={() => setShowNoticeEditor(false)} className="px-4 py-2 border rounded">キャンセル</button>
                   <button onClick={() => { localStorage.setItem('mercari_notice_text', noticeText); setShowNoticeEditor(false); setMessage('✅ 保証文を保存しました'); }} className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">保存</button>
@@ -4817,15 +5856,31 @@ function App() {
         const p = products[currentIdx];
         if (!p) return null;
         const { mergedImgs } = decomposeTarget;
-        const catLabels = { main: 'MAIN', keyboard: 'KEY', side: 'SIDE', info: 'INFO', other: '?' };
-        const catColors = { main: 'bg-blue-500', keyboard: 'bg-cyan-500', side: 'bg-purple-500', info: 'bg-green-600', other: 'bg-gray-500' };
-        const cats = ['main', 'info', 'keyboard', 'side', 'other'];
+        const catLabels = { main: 'MAIN', keyboard: 'KEY', side: 'SIDE', info: 'INFO', other: '?', spec: 'SPEC', front: 'FRONT', interior: 'IN', back: 'BACK' };
+        const catColors = { main: 'bg-blue-500', keyboard: 'bg-cyan-500', side: 'bg-purple-500', info: 'bg-green-600', other: 'bg-gray-500', spec: 'bg-green-600', front: 'bg-blue-500', interior: 'bg-orange-500', back: 'bg-red-500' };
+        const cats = pcMode === 'desktop' ? ['front', 'spec', 'interior', 'back', 'side', 'other'] : ['main', 'info', 'keyboard', 'side', 'other'];
         return (
           <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setDecomposeTarget(null)}>
             <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[85vh] overflow-hidden" onClick={e => e.stopPropagation()}>
               <div className="px-5 py-3 border-b flex items-center justify-between bg-purple-50">
                 <h3 className="font-bold text-lg">🔓 どの結合画像を分解する？</h3>
-                <button onClick={() => setDecomposeTarget(null)} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => {
+                    const np = [...products];
+                    mergedImgs.forEach(mImg => {
+                      const cat = mImg.category || mImg.id?.split('_').pop() || '?';
+                      np[currentIdx].images = np[currentIdx].images.filter(img => img.id !== mImg.id);
+                      np[currentIdx].images.forEach(img => {
+                        if (img.excluded && img.category === cat) img.excluded = false;
+                      });
+                    });
+                    setProducts(np);
+                    setDecomposeTarget(null);
+                    setPendingResort(true);
+                    setMessage('🔓 全分解＆再並替中...');
+                  }} className="px-3 py-1.5 bg-orange-500 text-white rounded-lg text-sm font-bold hover:bg-orange-600">🔓🔀 全部分解＆再並替</button>
+                  <button onClick={() => setDecomposeTarget(null)} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
+                </div>
               </div>
               <div className="p-5 overflow-y-auto" style={{maxHeight: 'calc(85vh - 60px)'}}>
                 <div className="grid grid-cols-1 gap-4">
@@ -4878,7 +5933,8 @@ function App() {
                                 const remaining = mergedImgs.filter(m => m.id !== mImg.id);
                                 if (remaining.length === 0) {
                                   setDecomposeTarget(null);
-                                  setMessage('🔓 分解完了 → バッジを直して🔀再並替');
+                                  setMessage('🔓 分解完了 → 再並替中...');
+                                  setPendingResort(true);
                                 } else {
                                   setDecomposeTarget({ mergedImgs: remaining });
                                   setMessage(`🔓 分解した → 残り${remaining.length}個`);
