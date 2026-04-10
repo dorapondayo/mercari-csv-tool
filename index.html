@@ -129,12 +129,35 @@ const CONFIG = {
 };
 // HEIC/HEIF → JPEG 変換
 const isHeic = (file) => /\.heic$/i.test(file.name) || /\.heif$/i.test(file.name) || file.type === 'image/heic' || file.type === 'image/heif';
-// HEIC→JPEG変換: heic2any (window.heic2any が <script src> でセットされる)
+// HEIC検出時に即座に案内パネルを表示
+const showHeicPanel = () => {
+  if (window._heicPanelShown) return;
+  window._heicPanelShown = true;
+  const id = 'heic-info-panel';
+  if (document.getElementById(id)) return;
+  const panel = document.createElement('div');
+  panel.id = id;
+  panel.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#dbeafe;border-bottom:3px solid #2563eb;padding:14px 20px;font-family:sans-serif;font-size:14px;line-height:1.8;box-shadow:0 2px 8px rgba(0,0,0,0.15);';
+  panel.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:flex-start;">
+    <div>
+      <b style="font-size:15px;color:#1e40af;">📷 HEIC画像が含まれています</b><br>
+      HEICはiPhoneの写真形式ですが、ブラウザでの自動変換には制限があります。<br>
+      <b style="color:#dc2626;">【今すぐ解決】</b>
+      <a href="https://heic.io/" target="_blank" style="color:#1d4ed8;font-weight:bold;text-decoration:underline;">heic.io</a>
+      でJPEGに変換してから再ドロップ（無料・即時）<br>
+      <b>【根本解決】</b> iPhoneの <b>設定 → カメラ → フォーマット → 互換性優先</b> に変更（今後JPEGで撮影される）
+    </div>
+    <button onclick="document.getElementById('heic-info-panel').remove();window._heicPanelShown=false;" style="background:none;border:none;font-size:20px;cursor:pointer;color:#1e40af;margin-left:16px;flex-shrink:0;">✕</button>
+  </div>`;
+  document.body.appendChild(panel);
+};
+// HEIC→JPEG変換: まず OS ネイティブ、次に heic2any を試みる
 const convertHeicToJpeg = async (file) => {
   if (!isHeic(file)) return file;
+  showHeicPanel();
   const outName = file.name.replace(/\.(heic|heif)$/i, '.jpg');
-  const makeFile = (blob) => new File([blob], outName, { type: 'image/jpeg' });
-  // Method 1: OSネイティブ (HEIC Image Extensions インストール済み or Safari)
+  const makeFile = (blob) => { document.getElementById('heic-info-panel')?.remove(); window._heicPanelShown=false; return new File([blob], outName, { type: 'image/jpeg' }); };
+  // Method 1: OSネイティブ (HEIC Image Extensions インストール済み / macOS / Safari)
   try {
     const bitmap = await createImageBitmap(file);
     const canvas = document.createElement('canvas');
@@ -142,23 +165,17 @@ const convertHeicToJpeg = async (file) => {
     canvas.getContext('2d').drawImage(bitmap, 0, 0);
     bitmap.close();
     const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.92));
-    if (blob && blob.size > 1000) { console.log(`[HEIC] M1 native: ${file.name}`); return makeFile(blob); }
-  } catch(e1) { console.warn('[HEIC] M1 失敗:', e1.message); }
-  // Method 2: heic2any (ブラウザ専用ビルド)
+    if (blob && blob.size > 1000) { console.log(`[HEIC] native変換成功: ${file.name}`); return makeFile(blob); }
+  } catch(e1) { console.warn('[HEIC] M1 native 失敗:', e1.message); }
+  // Method 2: heic2any
   try {
     if (typeof window.heic2any !== 'function') throw new Error('heic2any not loaded');
     const result = await window.heic2any({ blob: file, toType: 'image/jpeg', quality: 0.92 });
     const blob = Array.isArray(result) ? result[0] : result;
-    if (blob && blob.size > 1000) { console.log(`[HEIC] M2 heic2any: ${file.name}`); return makeFile(blob); }
+    if (blob && blob.size > 1000) { console.log(`[HEIC] heic2any変換成功: ${file.name}`); return makeFile(blob); }
   } catch(e2) { console.warn('[HEIC] M2 heic2any 失敗:', e2.message); }
-  console.error(`[HEIC] 全メソッド失敗: ${file.name}`);
-  if (!window._heicWarned) {
-    window._heicWarned = true;
-    const panel = document.createElement('div');
-    panel.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#fff3cd;border-bottom:3px solid #f0a500;padding:14px 20px;font-family:sans-serif;font-size:14px;line-height:1.7;';
-    panel.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:flex-start;"><div><b style="font-size:16px;color:#856404;">⚠️ HEIC画像を変換できませんでした</b><br><b>【解決策①】iPhoneの設定</b>　設定 → カメラ → フォーマット → <b>互換性優先</b>（今後JPEGで撮影）<br><b>【解決策②】オンライン変換</b>　<a href="https://heic.io/" target="_blank" style="color:#0056b3;text-decoration:underline;">heic.io</a> でJPEGに変換してから再ドロップ</div><button onclick="this.parentElement.parentElement.remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#856404;margin-left:16px;">✕</button></div>`;
-    document.body.appendChild(panel);
-  }
+  // 変換失敗 — パネルは表示済みなのでそのまま元ファイルを返す
+  console.error(`[HEIC] 変換不可（HEVCコーデック未搭載）: ${file.name}`);
   return file;
 };
 // FileからdataUrlを取得（HEIC自動変換付き）
