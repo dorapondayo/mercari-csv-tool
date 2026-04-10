@@ -11,19 +11,8 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/encoding-japanese@2.0.0/encoding.min.js"></script>
-  <!-- HEIC→JPEG変換: libheif-js v1.17.1 ESM (GitHub Pages / HTTPS 環境で動作) -->
-  <script type="module">
-    window.__libheifReady = import('https://cdn.jsdelivr.net/npm/libheif-js@1.17.1/libheif-esm.js')
-      .then(m => {
-        const e = (m && m.default !== undefined) ? m.default : m;
-        console.log('[libheif-esm] loaded, typeof:', typeof e);
-        return e;
-      })
-      .catch(err => {
-        console.warn('[libheif-esm] load failed:', err.message);
-        return null;
-      });
-  </script>
+  <!-- HEIC→JPEG変換: heic2any (ブラウザ専用ビルド) -->
+  <script src="https://cdn.jsdelivr.net/npm/heic2any/dist/heic2any.min.js" onerror="console.warn('[heic2any] script load failed')"></script>
   <style>
     .drag-over { border-color: #3b82f6 !important; background: #eff6ff !important; }
     /* 写真振り分けモード */
@@ -140,93 +129,34 @@ const CONFIG = {
 };
 // HEIC/HEIF → JPEG 変換
 const isHeic = (file) => /\.heic$/i.test(file.name) || /\.heif$/i.test(file.name) || file.type === 'image/heic' || file.type === 'image/heif';
-// libheif-js 初期化（<script type="module"> が window.__libheifReady をセット）
-const LIBHEIF_CDN = 'https://cdn.jsdelivr.net/npm/libheif-js@1.17.1/';
-const getLibheif = (() => {
-  let _p = null;
-  return () => {
-    if (_p) return _p;
-    _p = (async () => {
-      // module script が __libheifReady をセットするまで最大10秒待機
-      let n = 0;
-      while (!window.__libheifReady && n++ < 100) await new Promise(r => setTimeout(r, 100));
-      const factory = await (window.__libheifReady || Promise.resolve(null));
-      if (!factory) throw new Error('libheif ESM load failed');
-      if (typeof factory === 'function') {
-        console.log('[libheif] factory 呼び出し中...');
-        const m = await factory({ locateFile: f => LIBHEIF_CDN + f });
-        const mod = (m && m.ready) ? (await m.ready || m) : m;
-        if (mod && mod.HeifDecoder) { console.log('[libheif] 初期化成功 ✓'); return mod; }
-        throw new Error('HeifDecoder not found. keys=' + Object.keys(mod||{}).slice(0,10).join(','));
-      }
-      if (factory && factory.HeifDecoder) { console.log('[libheif] 直接モジュール ✓'); return factory; }
-      throw new Error('unknown export: typeof=' + typeof factory);
-    })();
-    return _p;
-  };
-})();
-const _drawToCanvas = async (w, h, fillFn) => {
-  const canvas = document.createElement('canvas');
-  canvas.width = w; canvas.height = h;
-  await fillFn(canvas.getContext('2d'), canvas);
-  const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.92));
-  return blob;
-};
+// HEIC→JPEG変換: heic2any (window.heic2any が <script src> でセットされる)
 const convertHeicToJpeg = async (file) => {
   if (!isHeic(file)) return file;
   const outName = file.name.replace(/\.(heic|heif)$/i, '.jpg');
   const makeFile = (blob) => new File([blob], outName, { type: 'image/jpeg' });
-  // Method 1: OSネイティブ（Windows HEIC Image Extensions 導入済み or Safari）
+  // Method 1: OSネイティブ (HEIC Image Extensions インストール済み or Safari)
   try {
     const bitmap = await createImageBitmap(file);
-    const blob = await _drawToCanvas(bitmap.width, bitmap.height, (ctx) => { ctx.drawImage(bitmap, 0, 0); bitmap.close(); });
-    if (blob && blob.size > 1000) { console.log(`HEIC native: ${file.name}`); return makeFile(blob); }
-    console.warn('[HEIC] M1 blob小さすぎ:', blob?.size);
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width; canvas.height = bitmap.height;
+    canvas.getContext('2d').drawImage(bitmap, 0, 0);
+    bitmap.close();
+    const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.92));
+    if (blob && blob.size > 1000) { console.log(`[HEIC] M1 native: ${file.name}`); return makeFile(blob); }
   } catch(e1) { console.warn('[HEIC] M1 失敗:', e1.message); }
-  // Method 2: libheif-js v1.17.1 (asm.js)
+  // Method 2: heic2any (ブラウザ専用ビルド)
   try {
-    const lib = await getLibheif();
-    const data = lib.new_heif_decoder().decode(new Uint8Array(await file.arrayBuffer()));
-    if (!data || !data.length) throw new Error('empty decode result');
-    const img = data[0];
-    const [w, h] = [img.get_width(), img.get_height()];
-    const blob = await _drawToCanvas(w, h, (ctx) => new Promise((res, rej) => {
-      const id = ctx.createImageData(w, h);
-      img.display(id, d => { if (!d) rej(new Error('display failed')); else { ctx.putImageData(id, 0, 0); res(); } });
-    }));
-    if (blob && blob.size > 1000) { console.log(`HEIC libheif: ${file.name}`); return makeFile(blob); }
-  } catch(e2) { console.warn('[HEIC] M2 libheif 失敗:', e2.message); }
-  // Method 2b: libheif-js HeifDecoder API
-  try {
-    const lib = await getLibheif();
-    const decoder = new lib.HeifDecoder();
-    const data = decoder.decode(new Uint8Array(await file.arrayBuffer()));
-    if (!data || !data.length) throw new Error('empty');
-    const img = data[0]; const [w, h] = [img.get_width(), img.get_height()];
-    const blob = await _drawToCanvas(w, h, (ctx) => new Promise((res, rej) => {
-      const id = ctx.createImageData(w, h);
-      img.display(id, d => { if (!d) rej(new Error('display')); else { ctx.putImageData(id, 0, 0); res(); } });
-    }));
-    if (blob && blob.size > 1000) { console.log(`HEIC libheif(legacy): ${file.name}`); return makeFile(blob); }
-  } catch(e2b) { console.warn('[HEIC] M2b 失敗:', e2b.message); }
+    if (typeof window.heic2any !== 'function') throw new Error('heic2any not loaded');
+    const result = await window.heic2any({ blob: file, toType: 'image/jpeg', quality: 0.92 });
+    const blob = Array.isArray(result) ? result[0] : result;
+    if (blob && blob.size > 1000) { console.log(`[HEIC] M2 heic2any: ${file.name}`); return makeFile(blob); }
+  } catch(e2) { console.warn('[HEIC] M2 heic2any 失敗:', e2.message); }
   console.error(`[HEIC] 全メソッド失敗: ${file.name}`);
   if (!window._heicWarned) {
     window._heicWarned = true;
     const panel = document.createElement('div');
     panel.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#fff3cd;border-bottom:3px solid #f0a500;padding:14px 20px;font-family:sans-serif;font-size:14px;line-height:1.7;';
-    panel.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-        <div>
-          <b style="font-size:16px;color:#856404;">⚠️ HEIC画像を変換できませんでした</b><br>
-          <b>【解決策①】iPhoneの設定を変更</b>　設定 → カメラ → フォーマット → <b>互換性優先</b>（今後JPEGで撮影される）<br>
-          <b>【解決策②】オンライン変換を使う</b>
-          <a href="https://heic.io/" target="_blank" style="color:#0056b3;text-decoration:underline;">heic.io</a> や
-          <a href="https://cloudconvert.com/heic-to-jpg" target="_blank" style="color:#0056b3;text-decoration:underline;">CloudConvert</a>
-          でJPEGに変換してから再ドロップ<br>
-          <b>【解決策③】Microsoft Storeで「HEIC Image Extensions」をインストール</b>後にリロード
-        </div>
-        <button onclick="this.parentElement.parentElement.remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#856404;margin-left:16px;">✕</button>
-      </div>`;
+    panel.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:flex-start;"><div><b style="font-size:16px;color:#856404;">⚠️ HEIC画像を変換できませんでした</b><br><b>【解決策①】iPhoneの設定</b>　設定 → カメラ → フォーマット → <b>互換性優先</b>（今後JPEGで撮影）<br><b>【解決策②】オンライン変換</b>　<a href="https://heic.io/" target="_blank" style="color:#0056b3;text-decoration:underline;">heic.io</a> でJPEGに変換してから再ドロップ</div><button onclick="this.parentElement.parentElement.remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#856404;margin-left:16px;">✕</button></div>`;
     document.body.appendChild(panel);
   }
   return file;
