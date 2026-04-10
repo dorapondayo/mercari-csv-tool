@@ -1149,8 +1149,8 @@ const getApiCostDetail = () => {
 };
 const callOpenAI = async (key, msgs, max = 200, model = 'gpt-5.4-mini') => {
   const body = { model, messages: msgs, max_completion_tokens: max };
-  // GPT-5系はreasoning model → minimal推論でトークン節約
-  if (model.startsWith('gpt-5')) body.reasoning_effort = 'minimal';
+  // GPT-5系はreasoning model → low推論でトークン節約（'minimal'は非対応）
+  if (model.startsWith('gpt-5')) body.reasoning_effort = 'low';
   const r = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
@@ -3016,7 +3016,7 @@ function App() {
       const r = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-        body: JSON.stringify({ model: 'gpt-5.4-mini', reasoning_effort: 'minimal', messages: [{ role: 'user', content: 'Say OK' }], max_completion_tokens: 50 })
+        body: JSON.stringify({ model: 'gpt-5.4-mini', reasoning_effort: 'low', messages: [{ role: 'user', content: 'Say OK' }], max_completion_tokens: 50 })
       });
       const d = await r.json();
       if (d.error) {
